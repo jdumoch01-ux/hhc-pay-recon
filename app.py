@@ -1302,18 +1302,17 @@ def main() -> None:
 
         period_labels = [r.period.label for r in results]
         selected_label = st.radio(
-            "Select a period to review:",
-            options=["—"] + period_labels,
+            "Period:",
+            options=period_labels,
+            index=len(period_labels) - 1,
             horizontal=True,
             key="period_picker",
-            label_visibility="collapsed",
         )
-        if selected_label != "—":
-            idx  = period_labels.index(selected_label)
-            r    = results[idx]
-            stub = stubs.get(r.period.start.isoformat())
-            st.divider()
-            _show_detail(r, stub, cfg, results_all, user)
+        idx  = period_labels.index(selected_label)
+        r    = results[idx]
+        stub = stubs.get(r.period.start.isoformat())
+        st.divider()
+        _show_detail(r, stub, cfg, results_all, user)
 
     with tab_audit:
         _show_year_audit(stubs, results_all, cfg, user)
