@@ -133,6 +133,15 @@ def _delta_css(val: str) -> str:
         return ""
 
 
+def _fmt_delta(delta: float) -> str:
+    """Format a pay delta with an icon prefix so sign is visible without CSS."""
+    a = abs(delta)
+    if a <= 1.0:   icon = "✅"
+    elif a <= 10.0: icon = "⚠️"
+    else:           icon = "🔴"
+    return f"{icon} ${delta:+,.2f}"
+
+
 # ---------------------------------------------------------------------------
 # Summary table
 # ---------------------------------------------------------------------------
@@ -158,7 +167,7 @@ def _build_summary_df(
             "Holidays":   ", ".join(h.strftime("%b %d") for h in r.period.holidays()) or "—",
             "Est. Gross": f"${est:,.2f}",
             "Stub Gross": f"${actual:,.2f}" if actual else "—",
-            "Δ":          f"${comparable - est:+,.2f}" if comparable is not None else "—",
+            "Δ":          _fmt_delta(comparable - est) if comparable is not None else "—",
         })
     return pd.DataFrame(rows)
 
@@ -433,32 +442,16 @@ def _show_detail(
 
     # ---- Hours summary ----
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Actual Hours", f"{r.total_actual_hours:.1f}h")
-    c2.metric("Admin Hours",  f"{r.total_admin_hours:.1f}h")
-    c3.metric("Total Paid",   f"{r.total_paid_hours:.1f}h")
-    c4.metric("OT / Per Diem", f"{r.perdiem_hours:.1f}h")
+    c1.metric("Actual Hours",   f"{r.total_actual_hours:.1f}h")
+    c2.metric("Admin Hours",    f"{r.total_admin_hours:.1f}h")
+    c3.metric("Total Paid",     f"{r.total_paid_hours:.1f}h")
+    c4.metric("OT / Per Diem",  f"{r.perdiem_hours:.1f}h")
 
-    # ---- Engine breakdown table ----
-    st.markdown("**Engine Estimate**")
-    eng_df = _engine_breakdown_df(r, cfg)
-    st.dataframe(
-        eng_df.style.apply(
-            lambda col: ["font-weight:700" if i == len(eng_df)-1 else "" for i in range(len(col))],
-            axis=0,
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # ---- Stub comparison ----
-    st.divider()
-    st.markdown("**Compare Against Actual Paystub**")
-
+    # ---- Stub upload / replace ----
     uploaded = st.file_uploader(
         "Replace stub for this period" if existing_stub else "Upload PDF stub for this period",
         type=["pdf"],
         key=f"up_{label}",
-        label_visibility="collapsed",
         help="Drop the PDF pay stub for this period to get a line-by-line comparison.",
     )
 
@@ -479,7 +472,6 @@ def _show_detail(
             st.error(f"PDF parse error: {exc}")
 
     if stub is not None:
-        # If stub has dates, verify it matches this period
         if stub.period_start is not None:
             matched = _match_stub(results, stub)
             if matched is None or matched.period.label != label:
@@ -493,24 +485,36 @@ def _show_detail(
         delta    = stub_gross - est
         accuracy = (1 - abs(delta) / stub_gross) * 100 if stub_gross else 100.0
 
-        st.divider()
-        cc1, cc2, cc3, cc4 = st.columns(4)
-        cc1.metric("Engine Estimate", f"${est:,.2f}")
-        cc2.metric("Stub Gross",      f"${stub_gross:,.2f}")
-        cc3.metric("Δ (Stub − Engine)", f"${delta:+,.2f}",
-                   delta_color="normal" if delta >= 0 else "inverse")
-        cc4.metric("Accuracy", f"{accuracy:.1f}%")
-
-        st.markdown("**Line-by-line comparison**")
-        comp_df = _comparison_df(r, stub, cfg)
-        st.dataframe(
-            comp_df.style.map(_delta_css, subset=["Δ"]),
-            use_container_width=True,
-            hide_index=True,
-        )
-
+        # ---- Discrepancy summary first (if underpaid) ----
         if delta < -1.0:
             _show_discrepancy_and_email(r, stub, stub_gross, delta, est, cfg)
+        else:
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            cc1.metric("Engine Estimate",   f"${est:,.2f}")
+            cc2.metric("Stub Gross",        f"${stub_gross:,.2f}")
+            cc3.metric("Δ (Stub − Engine)", f"${delta:+,.2f}",
+                       delta_color="normal" if delta >= 0 else "inverse")
+            cc4.metric("Accuracy", f"{accuracy:.1f}%")
+
+        # ---- Supporting detail (always in expanders) ----
+        with st.expander("Line-by-line comparison"):
+            comp_df = _comparison_df(r, stub, cfg)
+            st.dataframe(
+                comp_df.style.map(_delta_css, subset=["Δ"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        with st.expander("Engine estimate breakdown"):
+            eng_df = _engine_breakdown_df(r, cfg)
+            st.dataframe(
+                eng_df.style.apply(
+                    lambda col: ["font-weight:700" if i == len(eng_df)-1 else "" for i in range(len(col))],
+                    axis=0,
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
         with st.expander("Raw extracted text / parsed lines"):
             st.text(stub.raw_text[:5000] if stub.raw_text else "(none)")
@@ -520,6 +524,19 @@ def _show_detail(
                      "Current": e.current_amt, "YTD": e.ytd_amt, "Cat": e.category}
                     for e in stub.earnings
                 ]), use_container_width=True, hide_index=True)
+
+    else:
+        # No stub yet — show engine estimate so user knows what to expect
+        with st.expander("Engine estimate breakdown", expanded=True):
+            eng_df = _engine_breakdown_df(r, cfg)
+            st.dataframe(
+                eng_df.style.apply(
+                    lambda col: ["font-weight:700" if i == len(eng_df)-1 else "" for i in range(len(col))],
+                    axis=0,
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     # ---- Week-by-week shift detail ----
     with st.expander("Week-by-week shift detail"):
@@ -1281,9 +1298,9 @@ def main() -> None:
 
         st.subheader("Pay Periods")
         df = _build_summary_df(results, stubs, cfg)
-        st.caption("Click a row to see the full engine breakdown and stub comparison.")
+        st.caption("Select a row to see the full breakdown and draft a payroll email if needed.")
         event = st.dataframe(
-            df.style.map(_delta_css, subset=["Δ"]),
+            df,
             on_select="rerun",
             selection_mode="single-row",
             use_container_width=True,
