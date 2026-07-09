@@ -106,6 +106,7 @@ def load_config() -> dict:
 
 
 def fetch_ics(url: str) -> str:
+    url = url.replace("webcal://", "https://", 1)
     try:
         import certifi
         ctx = ssl.create_default_context(cafile=certifi.where())
