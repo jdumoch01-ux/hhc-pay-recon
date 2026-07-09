@@ -225,6 +225,15 @@ _EARN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Date-range lines with no rate/hours: "Lump Sum 06/14 06/27 8622.06 [8622.06]"
+_DATE_ONLY_EARN_RE = re.compile(
+    r"^(.+?)\s+"
+    r"(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+"
+    r"(" + _MONEY_RE + r")"                             # current amount
+    r"(?:\s+(" + _MONEY_RE + r"))?",                   # optional YTD earnings
+    re.IGNORECASE,
+)
+
 # Fallback: line has 3+ money values but no dates (YTD-only rows, totals, etc.)
 _FALLBACK_EARN_RE = re.compile(
     r"^(.+?)\s+"
@@ -339,8 +348,26 @@ def _parse_page(text: str) -> StubData:
             ))
             continue
 
-        # YTD-only rows (no week dates, just description + rate + YTD hours + YTD $)
-        # These appear for earnings not in the current period (holiday, bonus, etc.)
+        # Lines with date range but no rate/hours (e.g. Lump Sum, bonuses, corrections)
+        if in_earnings:
+            m_dto = _DATE_ONLY_EARN_RE.match(stripped)
+            if m_dto:
+                desc    = m_dto.group(1).strip()
+                wb      = _parse_date(m_dto.group(2))
+                we      = _parse_date(m_dto.group(3))
+                current = _clean(m_dto.group(4))
+                ytd     = _clean(m_dto.group(5)) if m_dto.group(5) else 0.0
+                if desc.lower() not in _SKIP_DESCS and current != 0:
+                    if wb: all_week_dates.append(wb)
+                    if we: all_week_dates.append(we)
+                    earnings.append(EarningsLine(
+                        description=desc, week_begin=wb, week_end=we,
+                        rate=0.0, hours=0.0, current_amt=current,
+                        ytd_amt=ytd, category="other",
+                    ))
+                continue
+
+        # YTD-only rows (no week dates, just description + hours + current + YTD)
         if in_earnings and stripped and "0.00" not in stripped[:5]:
             m2 = _FALLBACK_EARN_RE.match(stripped)
             if m2:
@@ -350,8 +377,7 @@ def _parse_page(text: str) -> StubData:
                 ytd     = _clean(m2.group(4))
                 if desc.lower() in _SKIP_DESCS:
                     continue
-                # Only record if current-period amount > 0 and hours > 0
-                if hours > 0 and rate_or_current > 0:
+                if rate_or_current > 0:
                     earnings.append(EarningsLine(
                         description=desc, week_begin=None, week_end=None,
                         rate=0.0, hours=hours, current_amt=rate_or_current,

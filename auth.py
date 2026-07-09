@@ -138,6 +138,16 @@ def save_stub(
         return False, str(exc)
 
 
+def delete_stub(user_id: str, period_start: str) -> tuple[bool, str]:
+    """Delete a single stub row for this user + period."""
+    client = _get_client()
+    try:
+        client.table("stubs").delete().eq("user_id", user_id).eq("period_start", period_start).execute()
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
 def load_stubs(user_id: str) -> list[dict]:
     """Return all stub rows for this user ordered by period_start."""
     client = _get_client()
