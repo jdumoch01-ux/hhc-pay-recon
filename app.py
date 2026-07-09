@@ -302,7 +302,7 @@ def _match_stub(results: list[PeriodResult], stub: StubData) -> Optional[PeriodR
 def _show_discrepancy_and_email(
     r: PeriodResult,
     stub: StubData,
-    stub_gross: float,
+    recurring_gross: float,
     delta: float,
     est: float,
     cfg: PayConfig,
@@ -354,11 +354,13 @@ def _show_discrepancy_and_email(
                 f"(${abs(pd_d):,.2f} short, {r.perdiem_hours:.1f}h over threshold)"
             )
 
+    total_gross = stub.total_gross or recurring_gross
+
     st.divider()
     st.warning(
         f"**Discrepancy detected: ${abs(delta):,.2f} short** — "
-        f"engine estimate ${est:,.2f} vs stub ${stub_gross:,.2f} (recurring pay only; "
-        f"bonuses and lump sums excluded from comparison)."
+        f"engine estimate ${est:,.2f} vs ${recurring_gross:,.2f} recurring pay "
+        f"(stub total ${total_gross:,.2f}; lump sums and bonuses excluded from comparison)."
     )
 
     if problem_lines:
@@ -385,7 +387,7 @@ Hi,
 
 I'm writing to request a review of my pay for the period {label} (pay date {paydate_str}).
 
-After comparing my pay stub against my scheduled hours, I'm showing a shortfall of approximately ${abs(delta):,.2f}. Based on my records, I should have received ${est:,.2f} in base pay and differentials, but my stub shows ${stub_gross:,.2f}.
+After comparing my pay stub against my scheduled hours, I'm showing a shortfall of approximately ${abs(delta):,.2f} in base pay and differentials. Based on my records I should have received ${est:,.2f} in recurring pay, but my stub shows ${recurring_gross:,.2f} (total stub gross ${total_gross:,.2f}, which includes separate one-time payments).
 
 Where the gap appears:
 {breakdown_text}
@@ -481,19 +483,21 @@ def _show_detail(
                     "Check that you uploaded the right stub."
                 )
 
-        stub_gross = stub.recurring_gross or stub.computed_gross
-        delta    = stub_gross - est
-        accuracy = (1 - abs(delta) / stub_gross) * 100 if stub_gross else 100.0
+        display_gross  = stub.total_gross or stub.computed_gross
+        comparable     = stub.recurring_gross or stub.computed_gross
+        delta          = comparable - est
+        accuracy       = (1 - abs(delta) / comparable) * 100 if comparable else 100.0
 
         # ---- Discrepancy summary first (if underpaid) ----
         if delta < -1.0:
-            _show_discrepancy_and_email(r, stub, stub_gross, delta, est, cfg)
+            _show_discrepancy_and_email(r, stub, comparable, delta, est, cfg)
         else:
             cc1, cc2, cc3, cc4 = st.columns(4)
-            cc1.metric("Engine Estimate",   f"${est:,.2f}")
-            cc2.metric("Stub Gross",        f"${stub_gross:,.2f}")
-            cc3.metric("Δ (Stub − Engine)", f"${delta:+,.2f}",
-                       delta_color="normal" if delta >= 0 else "inverse")
+            cc1.metric("Engine Estimate",      f"${est:,.2f}")
+            cc2.metric("Stub Gross",           f"${display_gross:,.2f}")
+            cc3.metric("Δ (recurring pay)",    f"${delta:+,.2f}",
+                       delta_color="normal" if delta >= 0 else "inverse",
+                       help="Compares recurring pay only — excludes lump sums and bonuses.")
             cc4.metric("Accuracy", f"{accuracy:.1f}%")
 
         # ---- Supporting detail (always in expanders) ----
