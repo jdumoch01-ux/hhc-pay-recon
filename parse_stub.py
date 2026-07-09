@@ -326,11 +326,11 @@ def _parse_page(text: str) -> StubData:
             rate     = _clean(m.group(4))
             hours    = _clean(m.group(5))
             current  = _clean(m.group(6))
-            # HHC stubs have two trailing columns: YTD hours and YTD earnings.
-            # The original regex only captured one, picking up YTD hours (not dollars).
-            # Grab all remaining money values and take the last = YTD earnings.
+            # The stub is two-column: pdfplumber merges each earnings row with the
+            # tax row at the same y-position. trailing[0] is YTD earnings; later
+            # values are tax amounts which we ignore.
             trailing = re.findall(_MONEY_RE, stripped[m.end():])
-            ytd      = _clean(trailing[-1]) if trailing else 0.0
+            ytd      = _clean(trailing[0]) if trailing else 0.0
 
             if desc.lower() in _SKIP_DESCS:
                 continue
