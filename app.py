@@ -1298,18 +1298,19 @@ def main() -> None:
 
         st.subheader("Pay Periods")
         df = _build_summary_df(results, stubs, cfg)
-        st.caption("Select a row to see the full breakdown and draft a payroll email if needed.")
-        event = st.dataframe(
-            df,
-            on_select="rerun",
-            selection_mode="single-row",
-            use_container_width=True,
-            hide_index=True,
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        period_labels = [r.period.label for r in results]
+        selected_label = st.radio(
+            "Select a period to review:",
+            options=["—"] + period_labels,
+            horizontal=True,
+            key="period_picker",
+            label_visibility="collapsed",
         )
-        selected = event.selection.rows
-        if selected:
-            idx = selected[0]
-            r   = results[idx]
+        if selected_label != "—":
+            idx  = period_labels.index(selected_label)
+            r    = results[idx]
             stub = stubs.get(r.period.start.isoformat())
             st.divider()
             _show_detail(r, stub, cfg, results_all, user)
