@@ -1,4 +1,3 @@
-config.toml
 *.ics
 __pycache__/
 *.pyc

@@ -1,0 +1,29 @@
+[schedule]
+local_tz = "America/New_York"
+pdf_dir = "/Users/joshdumoch/Desktop/Schedule"
+
+[pay]
+perdiem_rate       = 110.00
+admin_hours_per_week = 4.0
+ot_threshold       = 80.0
+
+[differentials]
+min_qualifying_hours = 4.0
+evening_rate  = 8.40
+evening_start = "15:00"
+evening_end   = "23:00"
+night_rate    = 11.00
+night_start   = "23:00"
+night_end     = "07:00"
+weekend_rate       = 11.00
+weekend_start_day  = 4
+weekend_start_time = "23:00"
+weekend_end_day    = 6
+weekend_end_time   = "23:00"
+holiday_pct = 0.50
+ot_evening_rate = 8.40
+ot_weekend_rate = 14.00
+
+[pto]
+standard_weekly_hours = 36.0
+accrual_per_period = 11.08
