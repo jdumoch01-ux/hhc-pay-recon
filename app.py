@@ -1296,6 +1296,65 @@ def _show_settings(user: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Onboarding (first-run stub upload)
+# ---------------------------------------------------------------------------
+
+def _show_onboarding(user: dict, results: list[PeriodResult]) -> None:
+    st.title("💵 APP Pay Reconciliation")
+    st.info(
+        "Upload your most recent pay stub to get started. "
+        "Only pay periods from that stub forward will be shown."
+    )
+
+    uploaded = st.file_uploader("Upload pay stub (PDF)", type=["pdf"])
+    if uploaded:
+        try:
+            stub = parse_stub_pdf(uploaded)
+        except Exception as exc:
+            st.error(f"Couldn't read stub: {exc}")
+            stub = None
+
+        if stub:
+            matched = _match_stub(results, stub)
+            if matched:
+                st.success(f"Detected period: **{matched.period.label}**")
+                if st.button("Set as baseline and continue"):
+                    ok, err = auth.update_settings(
+                        user["id"], {"baseline_date": matched.period.start.isoformat()}
+                    )
+                    if ok:
+                        st.session_state["user"]["baseline_date"] = matched.period.start.isoformat()
+                        st.rerun()
+                    else:
+                        st.error(f"Save failed: {err}")
+            else:
+                st.warning("Couldn't match stub to a pay period. Pick the period start date:")
+                manual = st.date_input("Pay period start date", key="onboard_manual")
+                if st.button("Set baseline"):
+                    ok, err = auth.update_settings(
+                        user["id"], {"baseline_date": manual.isoformat()}
+                    )
+                    if ok:
+                        st.session_state["user"]["baseline_date"] = manual.isoformat()
+                        st.rerun()
+                    else:
+                        st.error(f"Save failed: {err}")
+
+    st.divider()
+    st.caption("Or set a start date manually without uploading a stub:")
+    manual_date = st.date_input("Pay period start date", key="onboard_manual_only")
+    if st.button("Set baseline manually"):
+        ok, err = auth.update_settings(
+            user["id"], {"baseline_date": manual_date.isoformat()}
+        )
+        if ok:
+            st.session_state["user"]["baseline_date"] = manual_date.isoformat()
+            st.rerun()
+        else:
+            st.error(f"Save failed: {err}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1311,9 +1370,13 @@ def main() -> None:
     actuals = _load_actuals()
 
     baseline = user.get("baseline_date")
-    if baseline:
-        baseline_dt = date.fromisoformat(baseline)
-        results = [r for r in results if r.period.start >= baseline_dt]
+    if not baseline:
+        _build_sidebar(cfg, user)
+        _show_onboarding(user, results)
+        return
+
+    baseline_dt = date.fromisoformat(baseline)
+    results = [r for r in results if r.period.start >= baseline_dt]
 
     _build_sidebar(cfg, user)
 
