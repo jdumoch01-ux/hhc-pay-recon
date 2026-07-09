@@ -71,7 +71,7 @@ def _stub_from_db_row(row: dict) -> "StubData":
 
 
 @st.cache_data(show_spinner=False)
-def _load_stubs_cached(user_id: str) -> dict[str, "StubData"]:
+def _load_stubs_cached(user_id: str, _v: int = 2) -> dict[str, "StubData"]:
     """Returns {period_start_iso: StubData} for all uploaded stubs."""
     rows = auth.load_stubs(user_id)
     return {row["period_start"]: _stub_from_db_row(row) for row in rows if row.get("period_start")}
