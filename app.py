@@ -1243,6 +1243,12 @@ def _show_settings(user: dict) -> None:
             "ShiftAdmin ICS URL (leave blank to keep current)",
             type="password",
         )
+        current_baseline = user.get("baseline_date")
+        baseline_date = st.date_input(
+            "First pay stub date",
+            value=date.fromisoformat(current_baseline) if current_baseline else None,
+            help="Start date of your first uploaded pay stub. Periods before this date are hidden.",
+        )
         st.divider()
         st.subheader("Change Password")
         current_pw = st.text_input("Current password", type="password",
@@ -1259,6 +1265,7 @@ def _show_settings(user: dict) -> None:
             "base_rate":      base_rate,
             "tenure_bracket": TENURE_OPTIONS[tenure_idx],
             "pto_balance":    pto_balance,
+            "baseline_date":  baseline_date.isoformat() if baseline_date else None,
         }
         if ics_url.strip():
             updates["ics_url"] = ics_url.strip()
@@ -1302,6 +1309,11 @@ def main() -> None:
     cfg     = _load_cfg(float(user["base_rate"]), accrual)
     results = _load_results(user["ics_url"], float(user["base_rate"]), accrual)
     actuals = _load_actuals()
+
+    baseline = user.get("baseline_date")
+    if baseline:
+        baseline_dt = date.fromisoformat(baseline)
+        results = [r for r in results if r.period.start >= baseline_dt]
 
     _build_sidebar(cfg, user)
 
