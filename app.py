@@ -255,6 +255,9 @@ def _comparison_df(r: PeriodResult, stub: StubData, cfg: PayConfig) -> pd.DataFr
         eve_engine = r.evening_pay() + r.ot_evening_pay()
         rows.append(_row("Evening Diff (all)",  eve_engine,  stub.evening_pay,
                          f"engine: {r.evening_hours:.1f}h regular + OT"))
+    if r.night_hours or stub.night_pay:
+        rows.append(_row("Night Diff", r.night_pay(), stub.night_pay,
+                         f"engine: {r.night_hours:.1f}h × ${cfg.night_rate}"))
     if r.weekend_hours or stub.weekend_pay:
         wknd_engine = r.weekend_pay() + r.ot_weekend_pay()
         rows.append(_row("Weekend Diff (all)",  wknd_engine,  stub.weekend_pay,
@@ -327,6 +330,15 @@ def _show_discrepancy_and_email(
             problem_lines.append(
                 f"Evening differential — expected ${eve_eng:,.2f}, received ${stub.evening_pay:,.2f} "
                 f"(${abs(eve_d):,.2f} short, {r.evening_hours:.1f}h in 15:00–23:00 window)"
+            )
+
+    if r.night_hours or stub.night_pay:
+        night_eng = r.night_pay()
+        night_d = stub.night_pay - night_eng
+        if night_d < -1.0:
+            problem_lines.append(
+                f"Night differential — expected ${night_eng:,.2f}, received ${stub.night_pay:,.2f} "
+                f"(${abs(night_d):,.2f} short, {r.night_hours:.1f}h × ${cfg.night_rate})"
             )
 
     if r.weekend_hours or stub.weekend_pay:

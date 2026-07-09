@@ -19,6 +19,7 @@ _RATE_TO_CAT: dict[float, str] = {
     94.37: "base",
     6.72:  "eve",
     8.40:  "wknd",      # may be overridden to ot_eve by description
+    11.00: "night",     # night/weekend diff — disambiguated by description below
     14.00: "ot_wknd",
     110.00: "ot_base",
     47.18: "holiday",   # actual stub rounding variant
@@ -42,6 +43,11 @@ def _classify(description: str, rate: float) -> str:
         if "evening" in dl:
             return "ot_eve"
         return "wknd"
+    if rate == 11.00:
+        # Weekend diff and night diff share $11.00; description distinguishes them.
+        if "weekend" in dl or "wknd" in dl:
+            return "wknd"
+        return "night"
     return _RATE_TO_CAT.get(rate, "other")
 
 
@@ -122,6 +128,8 @@ class StubData:
     def base_pay(self)    -> float: return self.amount_by_cat("base")
     @property
     def evening_pay(self) -> float: return self.amount_by_cat("eve", "ot_eve")
+    @property
+    def night_pay(self)   -> float: return self.amount_by_cat("night")
     @property
     def weekend_pay(self) -> float: return self.amount_by_cat("wknd", "ot_wknd")
     @property
