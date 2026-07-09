@@ -977,6 +977,36 @@ def _show_stub_pto_plan_tab(
     )
 
 
+def _show_other_earnings(stubs: list[StubData]) -> None:
+    """Display non-reconciled earnings lines (corrections, CME stipends, bonuses)."""
+    other_lines = [
+        {
+            "Advice Date": s.advice_date.strftime("%b %d, %Y") if s.advice_date else "—",
+            "Description": e.description,
+            "Hours": f"{e.hours:.2f}" if e.hours else "—",
+            "Amount": f"${e.current_amt:,.2f}",
+            "YTD": f"${e.ytd_amt:,.2f}",
+        }
+        for s in stubs
+        for e in s.earnings
+        if e.category == "other" and e.current_amt != 0.0
+    ]
+    if not other_lines:
+        st.caption("No other earnings on uploaded stubs.")
+        return
+    total = sum(
+        e.current_amt
+        for s in stubs for e in s.earnings
+        if e.category == "other"
+    )
+    st.metric("Total Other Earnings", f"${total:,.2f}")
+    st.dataframe(
+        pd.DataFrame(other_lines),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+
 def _show_year_audit(results: list[PeriodResult], cfg: PayConfig, user: dict) -> None:
     st.subheader("📂 Upload All Pay Stubs")
     st.caption(
@@ -1028,6 +1058,15 @@ def _show_year_audit(results: list[PeriodResult], cfg: PayConfig, user: dict) ->
 
     with t_plan:
         _show_stub_pto_plan_tab(stubs, results, cfg)
+
+    if stubs:
+        st.divider()
+        st.subheader("💰 Other Earnings")
+        st.caption(
+            "Pay corrections, CME stipends, bonuses, and other non-reconciled lines. "
+            "Displayed for tracking only — no engine comparison."
+        )
+        _show_other_earnings(stubs)
 
 
 # ---------------------------------------------------------------------------
