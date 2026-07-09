@@ -1,4 +1,4 @@
-"""HHC Pay Reconciliation — Streamlit dashboard."""
+"""APP Pay Reconciliation — Streamlit dashboard."""
 from __future__ import annotations
 
 import json
@@ -23,7 +23,7 @@ import auth
 ACTUALS_PATH = Path(__file__).parent / "actuals.json"
 
 st.set_page_config(
-    page_title="HHC Pay Reconciliation",
+    page_title="APP Pay Reconciliation",
     page_icon="💵",
     layout="wide",
 )
@@ -155,7 +155,7 @@ def _engine_breakdown_df(r: PeriodResult, cfg: PayConfig) -> pd.DataFrame:
     if r.holiday_hours:
         rows.append(_row(
             "Holiday Diff", r.holiday_hours, cfg.base_rate * cfg.holiday_pct,
-            r.holiday_pay(), "+50% base on HHC holidays",
+            r.holiday_pay(), "+50% base on holidays",
         ))
     if r.perdiem_hours:
         rows.append(_row(
@@ -428,8 +428,8 @@ TENURE_LABELS  = [
 
 
 def _show_auth_page() -> None:
-    st.title("💵 HHC Pay Reconciliation")
-    st.caption("Charlotte Hungerford Hospital — APP Pay Audit Tool")
+    st.title("💵 APP Pay Reconciliation")
+    st.caption("Advanced Practice Provider Pay Audit Tool")
     st.divider()
 
     tab_login, tab_register = st.tabs(["Login", "Create Account"])
@@ -471,11 +471,18 @@ def _show_auth_page() -> None:
                 help="From ShiftAdmin → My Schedule → Subscribe to Calendar. "
                      "Contains your personal auth token — stored encrypted.",
             )
+            disclaimer = st.checkbox(
+                "I understand this tool is not affiliated with or endorsed by my employer. "
+                "I am responsible for verifying all information against my official pay stubs "
+                "and records before taking any action."
+            )
             submitted = st.form_submit_button("Create account", use_container_width=True)
 
         if submitted:
             tenure_bracket = TENURE_OPTIONS[tenure_idx]
-            if password != confirm_pw:
+            if not disclaimer:
+                st.error("You must accept the disclaimer to create an account.")
+            elif password != confirm_pw:
                 st.error("Passwords don't match.")
             elif not all([last_name.strip(), password, ics_url.strip()]):
                 st.error("Last name, password, and ShiftAdmin URL are required.")
@@ -498,7 +505,7 @@ def _show_auth_page() -> None:
 
 def _build_sidebar(cfg: PayConfig, user: dict) -> None:
     with st.sidebar:
-        st.title("💵 HHC Pay Recon")
+        st.title("💵 APP Pay Recon")
         st.caption(f"Logged in as **{user['last_name']}**")
         st.divider()
         st.subheader("Rates")
@@ -510,7 +517,7 @@ def _build_sidebar(cfg: PayConfig, user: dict) -> None:
             f"Eve diff: **+${cfg.evening_rate}/hr** (15:00–23:00, ≥4h)  \n"
             f"Night diff: **+${cfg.night_rate}/hr** (23:00–07:00, ≥4h)  \n"
             f"Wknd diff: **+${cfg.weekend_rate}/hr** (Fri 23:00–Sun 23:00, ≥4h)  \n"
-            f"Holiday: **+50% base** on HHC holidays  \n"
+            f"Holiday: **+50% base** on holidays  \n"
         )
         st.divider()
         if st.button("🔄 Refresh schedule", use_container_width=True):
@@ -839,6 +846,58 @@ def _show_diff_audit_tab(
                          "Current": e.current_amt, "Cat": e.category}
                         for e in stub.earnings
                     ]), use_container_width=True, hide_index=True)
+
+    # Draft email to payroll
+    underpaid_periods = [
+        row for row in summary_rows
+        if row.get("Gross Δ", "—") not in ("—", "$+0.00")
+        and row.get("Gross Δ", "—").startswith("$-")
+    ]
+    if underpaid_periods or total_diff_delta < -1.0:
+        st.divider()
+        st.subheader("📧 Draft Email to Payroll")
+        st.caption("Copy and paste this into an email to your payroll department.")
+
+        total_underpaid = abs(min(0.0, total_gross_delta))
+        eve_underpaid   = abs(min(0.0, total_eve_delta))
+        wknd_underpaid  = abs(min(0.0, total_wknd_delta))
+
+        period_list = "\n".join(
+            f"  • {row['Period']} (pay date {row['Advice Date']}): "
+            f"expected {row['Engine Est']}, paid {row['Stub Gross']}, "
+            f"difference {row['Gross Δ']}"
+            for row in underpaid_periods
+        )
+
+        diff_breakdown = []
+        if eve_underpaid > 1.0:
+            diff_breakdown.append(f"evening differential: ${eve_underpaid:,.2f} short")
+        if wknd_underpaid > 1.0:
+            diff_breakdown.append(f"weekend differential: ${wknd_underpaid:,.2f} short")
+        diff_str = " and ".join(diff_breakdown) if diff_breakdown else "differential pay"
+
+        email_text = f"""To: Payroll Department
+
+Subject: Pay Discrepancy — Differential Pay Review Request
+
+Hi,
+
+I am writing to request a review of my pay for the following pay periods, where I believe there may be a discrepancy in my differential pay.
+
+After reviewing my pay stubs against my scheduled hours, I found that I was underpaid a total of approximately ${total_underpaid:,.2f} in {diff_str} across the following period(s):
+
+{period_list if period_list else "  (see attached stubs for details)"}
+
+Based on my understanding of our differential pay structure — including evening differentials for hours worked between 3:00 PM and 11:00 PM, and weekend differentials for hours worked Friday 11:00 PM through Sunday 11:00 PM — my records indicate a shortfall of approximately ${total_underpaid:,.2f}.
+
+I have attached my pay stubs for reference. Could you please review and let me know if a correction is warranted?
+
+Thank you for your time.
+
+[Your name]
+[Your department]"""
+
+        st.code(email_text, language=None)
 
 
 def _show_stub_pto_plan_tab(
@@ -1233,7 +1292,7 @@ def main() -> None:
 
     _build_sidebar(cfg, user)
 
-    st.title("💵 HHC Pay Reconciliation")
+    st.title("💵 APP Pay Reconciliation")
 
     if not results:
         st.warning("No shifts loaded — check your ShiftAdmin URL in Settings.")
