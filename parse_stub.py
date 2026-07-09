@@ -91,6 +91,7 @@ class StubData:
     pay_date:      Optional[date] = None     # same as advice_date for HHC
     earnings:      list[EarningsLine] = field(default_factory=list)
     raw_gross:     float = 0.0
+    ytd_gross:     float = 0.0               # Total Gross YTD from stub summary line
     pto_balance:   float = 0.0               # balance shown on this stub
     raw_text:      str = ""
 
@@ -298,6 +299,7 @@ def _parse_page(text: str) -> StubData:
     # ---- earnings lines ----
     in_earnings = False
     raw_gross = 0.0
+    ytd_gross_direct = 0.0
     earnings: list[EarningsLine] = []
 
     for raw_line in lines:
@@ -315,6 +317,17 @@ def _parse_page(text: str) -> StubData:
             nums = re.findall(_MONEY_RE, stripped)
             if nums:
                 raw_gross = _clean(nums[0])
+                # Two-column layout: if both current and YTD appear on the same line
+                if len(nums) >= 2 and ytd_gross_direct == 0.0:
+                    ytd_gross_direct = _clean(nums[1])
+            continue
+
+        # Bottom summary row: "YTD 127,980.71 108,783.84 37,773.37 ..."
+        # First value = Total Gross YTD (the authoritative number from the stub).
+        if re.match(r"^ytd\s", ll) and not in_earnings:
+            nums = re.findall(_MONEY_RE, stripped)
+            if len(nums) >= 3 and ytd_gross_direct == 0.0:
+                ytd_gross_direct = _clean(nums[0])
             continue
 
         # Try full earnings-line pattern (has week begin/end dates)
@@ -386,6 +399,7 @@ def _parse_page(text: str) -> StubData:
 
     stub.earnings  = earnings
     stub.raw_gross = raw_gross
+    stub.ytd_gross = ytd_gross_direct
 
     # Infer period from week dates if not found above
     if all_week_dates:

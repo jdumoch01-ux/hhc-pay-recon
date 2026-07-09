@@ -117,6 +117,7 @@ def save_stub(
     pto_balance: float,
     advice_number: str,
     earnings: list[dict],
+    ytd_gross: float = 0.0,
 ) -> tuple[bool, str]:
     """Upsert a parsed stub into Supabase (keyed by user_id + period_start)."""
     client = _get_client()
@@ -130,6 +131,7 @@ def save_stub(
                 "pto_balance":   pto_balance,
                 "advice_number": advice_number,
                 "earnings_json": earnings,
+                "ytd_gross":     ytd_gross,
             },
             on_conflict="user_id,period_start",
         ).execute()

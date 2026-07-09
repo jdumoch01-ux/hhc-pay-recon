@@ -64,6 +64,7 @@ def _stub_from_db_row(row: dict) -> "StubData":
         period_start=_d(row.get("period_start")),
         period_end=_d(row.get("period_end")),
         raw_gross=row.get("raw_gross", 0.0),
+        ytd_gross=row.get("ytd_gross", 0.0),
         pto_balance=row.get("pto_balance", 0.0),
         earnings=earnings,
     )
@@ -85,6 +86,7 @@ def _save_stub_to_db(user_id: str, stub: "StubData", period_start_iso: str) -> t
         pto_balance=stub.pto_balance,
         advice_number=stub.advice_number,
         earnings=_stub_to_earnings_list(stub),
+        ytd_gross=stub.ytd_gross,
     )
 
 
@@ -447,13 +449,17 @@ def _show_ytd_panel(stubs: dict[str, "StubData"]) -> None:
     latest_key = max(stubs.keys())
     latest     = stubs[latest_key]
 
-    # YTD gross: take the max ytd_amt per earnings description to avoid
-    # double-counting when the same type appears in both week 1 and week 2 lines.
-    ytd_by_desc: dict[str, float] = {}
-    for e in latest.earnings:
-        if e.ytd_amt > ytd_by_desc.get(e.description, 0.0):
-            ytd_by_desc[e.description] = e.ytd_amt
-    ytd_gross = round(sum(ytd_by_desc.values()), 2)
+    # Prefer the Total Gross YTD parsed directly from the stub's summary line —
+    # it includes all earnings types and pre-tax contributions without guessing.
+    # Fall back to summing individual YTD amounts if the direct value wasn't captured.
+    if latest.ytd_gross > 0:
+        ytd_gross = latest.ytd_gross
+    else:
+        ytd_by_desc: dict[str, float] = {}
+        for e in latest.earnings:
+            if e.ytd_amt > ytd_by_desc.get(e.description, 0.0):
+                ytd_by_desc[e.description] = e.ytd_amt
+        ytd_gross = round(sum(ytd_by_desc.values()), 2)
 
     current_gross  = latest.total_gross
     pto_period_hrs = latest.pto_hours_used
@@ -462,20 +468,13 @@ def _show_ytd_panel(stubs: dict[str, "StubData"]) -> None:
     st.subheader("Year-to-Date Summary")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("YTD Gross", f"${ytd_gross:,.2f}",
-              help="YTD column of your most recently uploaded stub — all earnings types combined.")
+              help="Total Gross YTD from your most recently uploaded stub.")
     c2.metric("Current Period Gross", f"${current_gross:,.2f}",
               help="Gross paid on the most recent uploaded stub.")
     c3.metric("PTO Remaining", f"{pto_remaining:.2f} hrs",
               help="PTO balance shown on the most recent stub.")
     c4.metric("PTO This Period", f"{pto_period_hrs:.2f} hrs",
               help="PTO hours used in the most recent stub period.")
-
-    with st.expander("🔍 YTD breakdown by earnings type (debug)"):
-        rows = [
-            {"Earnings Type": desc, "YTD Amount": f"${amt:,.2f}"}
-            for desc, amt in sorted(ytd_by_desc.items(), key=lambda x: -x[1])
-        ]
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 
 def _show_notes(r: PeriodResult, stub: Optional[StubData] = None) -> None:
