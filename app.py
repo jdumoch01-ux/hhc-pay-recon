@@ -419,6 +419,45 @@ def _show_detail(
     _show_notes(r, stub)
 
 
+def _show_ytd_panel(stubs: dict[str, "StubData"]) -> None:
+    """YTD and PTO summary drawn from the most recently uploaded stub."""
+    if not stubs:
+        return
+
+    latest_key = max(stubs.keys())
+    latest     = stubs[latest_key]
+
+    # YTD gross: take the max ytd_amt per earnings description to avoid
+    # double-counting when the same type appears in both week 1 and week 2 lines.
+    ytd_by_desc: dict[str, float] = {}
+    for e in latest.earnings:
+        if e.ytd_amt > ytd_by_desc.get(e.description, 0.0):
+            ytd_by_desc[e.description] = e.ytd_amt
+    ytd_gross = round(sum(ytd_by_desc.values()), 2)
+
+    current_gross = latest.total_gross
+
+    # PTO hours YTD: sum across all uploaded stubs (we own them all)
+    pto_ytd_hrs    = round(sum(s.pto_hours_used for s in stubs.values()), 2)
+    pto_period_hrs = latest.pto_hours_used
+    pto_remaining  = latest.pto_balance
+
+    st.divider()
+    col_a, col_b = st.columns(2)
+    col_a.metric("YTD Gross (most recent stub)", f"${ytd_gross:,.2f}",
+                 help="Year-to-date gross from the YTD column of your most recently uploaded stub.")
+    col_b.metric("Current Period Gross", f"${current_gross:,.2f}",
+                 help="Gross paid on the most recent uploaded stub.")
+
+    p1, p2, p3 = st.columns(3)
+    p1.metric("PTO Used YTD", f"{pto_ytd_hrs:.2f} hrs",
+              help="Sum of PTO hours across all uploaded stubs.")
+    p2.metric("PTO This Period", f"{pto_period_hrs:.2f} hrs",
+              help="PTO hours on the most recent stub.")
+    p3.metric("PTO Remaining", f"{pto_remaining:.2f} hrs",
+              help="PTO balance shown on the most recent stub.")
+
+
 def _show_notes(r: PeriodResult, stub: Optional[StubData] = None) -> None:
     notes = []
     if (r.week1.weekend_hours + r.week2.weekend_hours) > 0:
@@ -1426,6 +1465,7 @@ def main() -> None:
             cc2.metric("Stub Gross (all)",      f"${total_stub:,.2f}")
             cc3.metric("Evening Differentials", f"${total_eve:,.2f}")
             cc4.metric("Weekend Differentials", f"${total_wknd:,.2f}")
+            _show_ytd_panel(stubs)
             st.divider()
             _show_pto_projection(results, cfg)
 
