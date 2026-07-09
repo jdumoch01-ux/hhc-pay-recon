@@ -317,7 +317,11 @@ def _parse_page(text: str) -> StubData:
             rate     = _clean(m.group(4))
             hours    = _clean(m.group(5))
             current  = _clean(m.group(6))
-            ytd      = _clean(m.group(7)) if m.group(7) else 0.0
+            # HHC stubs have two trailing columns: YTD hours and YTD earnings.
+            # The original regex only captured one, picking up YTD hours (not dollars).
+            # Grab all remaining money values and take the last = YTD earnings.
+            trailing = re.findall(_MONEY_RE, stripped[m.end():])
+            ytd      = _clean(trailing[-1]) if trailing else 0.0
 
             if desc.lower() in _SKIP_DESCS:
                 continue
