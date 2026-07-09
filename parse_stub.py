@@ -227,9 +227,10 @@ _EARN_RE = re.compile(
 )
 
 # Date-range lines with no rate/hours: "Lump Sum 06/14 06/27 8622.06 [8622.06]"
+# Dates may appear as MM/DD (Lump Sum) or MM/DD/YYYY (other bonuses).
 _DATE_ONLY_EARN_RE = re.compile(
     r"^(.+?)\s+"
-    r"(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+"
+    r"(\d{2}/\d{2}(?:/\d{4})?)\s+(\d{2}/\d{2}(?:/\d{4})?)\s+"
     r"(" + _MONEY_RE + r")"                             # current amount
     r"(?:\s+(" + _MONEY_RE + r"))?",                   # optional YTD earnings
     re.IGNORECASE,
@@ -248,8 +249,8 @@ _SKIP_DESCS = {
     "description", "earnings type", "earn code", "earn type",
     "hours and earnings", "hours", "rate", "current", "ytd",
 }
-_STOP_KW = {"deduction", "deductions", "taxes", "tax", "net pay",
-            "withholding", "direct deposit", "before-tax", "after-tax",
+_STOP_KW = {"deduction", "deductions", "net pay",
+            "direct deposit", "before-tax", "after-tax",
             "employer paid", "time off"}
 
 
@@ -327,6 +328,14 @@ def _parse_page(text: str) -> StubData:
                 ytd_gross_direct = _clean(nums[0])
             continue
 
+        # Bottom summary row: "Current 17,040.85 15,280.07 3,182.39 ..."
+        # First value = Total Gross current period. Only set if _GROSS_KW didn't fire.
+        if re.match(r"^current\s", ll) and not in_earnings:
+            nums = re.findall(_MONEY_RE, stripped)
+            if len(nums) >= 3 and raw_gross == 0.0:
+                raw_gross = _clean(nums[0])
+            continue
+
         # Try full earnings-line pattern (has week begin/end dates)
         m = _EARN_RE.match(stripped)
         if m:
@@ -388,9 +397,11 @@ def _parse_page(text: str) -> StubData:
                 if desc.lower() in _SKIP_DESCS:
                     continue
                 if rate_or_current > 0:
+                    # When hours==0.0, rate_or_current is YTD hours, not current dollars.
+                    current_amt = 0.0 if hours == 0.0 else rate_or_current
                     earnings.append(EarningsLine(
                         description=desc, week_begin=None, week_end=None,
-                        rate=0.0, hours=hours, current_amt=rate_or_current,
+                        rate=0.0, hours=hours, current_amt=current_amt,
                         ytd_amt=ytd, category="other",
                     ))
 
