@@ -1035,7 +1035,73 @@ def _show_year_audit(results: list[PeriodResult], cfg: PayConfig, user: dict) ->
 # ---------------------------------------------------------------------------
 
 def _show_settings(user: dict) -> None:
-    st.info("Settings coming soon.")
+    st.subheader("Account Settings")
+    st.caption(f"Account: **{user['last_name']}**")
+
+    with st.form("settings_form"):
+        base_rate = st.number_input(
+            "Base hourly rate ($)",
+            min_value=50.0, max_value=300.0,
+            value=float(user["base_rate"]), step=0.01,
+        )
+        tenure_idx = st.selectbox(
+            "Years of service",
+            range(len(TENURE_OPTIONS)),
+            index=TENURE_OPTIONS.index(user["tenure_bracket"]),
+            format_func=lambda i: TENURE_LABELS[i],
+        )
+        pto_balance = st.number_input(
+            "PTO balance (hours)",
+            min_value=0.0, max_value=500.0,
+            value=float(user["pto_balance"]), step=0.5,
+        )
+        ics_url = st.text_input(
+            "ShiftAdmin ICS URL (leave blank to keep current)",
+            type="password",
+        )
+        st.divider()
+        st.subheader("Change Password")
+        current_pw = st.text_input("Current password", type="password",
+                                   key="settings_current_pw")
+        new_pw     = st.text_input("New password", type="password",
+                                   key="settings_new_pw")
+        confirm_pw = st.text_input("Confirm new password", type="password",
+                                   key="settings_confirm_pw")
+
+        save = st.form_submit_button("Save changes", use_container_width=True)
+
+    if save:
+        updates: dict = {
+            "base_rate":      base_rate,
+            "tenure_bracket": TENURE_OPTIONS[tenure_idx],
+            "pto_balance":    pto_balance,
+        }
+        if ics_url.strip():
+            updates["ics_url"] = ics_url.strip()
+        if new_pw:
+            if not current_pw:
+                st.error("Enter your current password to set a new one.")
+                return
+            if new_pw != confirm_pw:
+                st.error("New passwords don't match.")
+                return
+            if not auth.verify_current_password(user["id"], current_pw):
+                st.error("Current password is incorrect.")
+                return
+            updates["password"] = new_pw
+
+        ok, err = auth.update_settings(user["id"], updates)
+        if ok:
+            for k, v in updates.items():
+                if k not in ("password",):
+                    st.session_state["user"][k] = v
+            if "ics_url" in updates:
+                st.session_state["user"]["ics_url"] = updates["ics_url"]
+            st.success("Settings saved.")
+            st.cache_data.clear()
+            st.rerun()
+        else:
+            st.error(f"Save failed: {err}")
 
 
 # ---------------------------------------------------------------------------
