@@ -317,9 +317,6 @@ def _parse_page(text: str) -> StubData:
             nums = re.findall(_MONEY_RE, stripped)
             if nums:
                 raw_gross = _clean(nums[0])
-                # Two-column layout: if both current and YTD appear on the same line
-                if len(nums) >= 2 and ytd_gross_direct == 0.0:
-                    ytd_gross_direct = _clean(nums[1])
             continue
 
         # Bottom summary row: "YTD 127,980.71 108,783.84 37,773.37 ..."
