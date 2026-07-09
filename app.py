@@ -455,8 +455,7 @@ def _show_ytd_panel(stubs: dict[str, "StubData"]) -> None:
             ytd_by_desc[e.description] = e.ytd_amt
     ytd_gross = round(sum(ytd_by_desc.values()), 2)
 
-    current_gross = latest.total_gross
-    pto_ytd_hrs    = round(sum(s.pto_hours_used for s in stubs.values()), 2)
+    current_gross  = latest.total_gross
     pto_period_hrs = latest.pto_hours_used
     pto_remaining  = latest.pto_balance
 
@@ -468,8 +467,8 @@ def _show_ytd_panel(stubs: dict[str, "StubData"]) -> None:
               help="Gross paid on the most recent uploaded stub.")
     c3.metric("PTO Remaining", f"{pto_remaining:.2f} hrs",
               help="PTO balance shown on the most recent stub.")
-    c4.metric("PTO Used YTD", f"{pto_ytd_hrs:.2f} hrs",
-              help="Sum of PTO hours across all uploaded stubs.")
+    c4.metric("PTO This Period", f"{pto_period_hrs:.2f} hrs",
+              help="PTO hours used in the most recent stub period.")
 
 
 def _show_notes(r: PeriodResult, stub: Optional[StubData] = None) -> None:
