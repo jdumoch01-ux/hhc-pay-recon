@@ -470,6 +470,13 @@ def _show_ytd_panel(stubs: dict[str, "StubData"]) -> None:
     c4.metric("PTO This Period", f"{pto_period_hrs:.2f} hrs",
               help="PTO hours used in the most recent stub period.")
 
+    with st.expander("🔍 YTD breakdown by earnings type (debug)"):
+        rows = [
+            {"Earnings Type": desc, "YTD Amount": f"${amt:,.2f}"}
+            for desc, amt in sorted(ytd_by_desc.items(), key=lambda x: -x[1])
+        ]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
 
 def _show_notes(r: PeriodResult, stub: Optional[StubData] = None) -> None:
     notes = []
