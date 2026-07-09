@@ -17,11 +17,6 @@ from reconcile_stubs import audit_pto, audit_differentials, total_underpayment
 
 import auth
 
-# ---------------------------------------------------------------------------
-# Config / paths
-# ---------------------------------------------------------------------------
-ACTUALS_PATH = Path(__file__).parent / "actuals.json"
-
 st.set_page_config(
     page_title="APP Pay Reconciliation",
     page_icon="💵",
@@ -29,20 +24,68 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Persistence helpers
+# Stub persistence helpers (Supabase-backed)
 # ---------------------------------------------------------------------------
 
-def _load_actuals() -> dict[str, float]:
-    if ACTUALS_PATH.exists():
-        try:
-            return json.loads(ACTUALS_PATH.read_text())
-        except Exception:
-            return {}
-    return {}
+def _stub_to_earnings_list(stub: "StubData") -> list[dict]:
+    return [
+        {
+            "description": e.description,
+            "week_begin":  e.week_begin.isoformat() if e.week_begin else None,
+            "week_end":    e.week_end.isoformat()   if e.week_end   else None,
+            "rate":        e.rate,
+            "hours":       e.hours,
+            "current_amt": e.current_amt,
+            "ytd_amt":     e.ytd_amt,
+            "category":    e.category,
+        }
+        for e in stub.earnings
+    ]
 
 
-def _save_actuals(actuals: dict[str, float]) -> None:
-    ACTUALS_PATH.write_text(json.dumps(actuals, indent=2))
+def _stub_from_db_row(row: dict) -> "StubData":
+    from parse_stub import EarningsLine
+    def _d(s): return date.fromisoformat(s) if s else None
+    earnings = [
+        EarningsLine(
+            description=e["description"],
+            week_begin=_d(e.get("week_begin")),
+            week_end=_d(e.get("week_end")),
+            rate=e["rate"],
+            hours=e["hours"],
+            current_amt=e["current_amt"],
+            ytd_amt=e.get("ytd_amt", 0.0),
+            category=e["category"],
+        )
+        for e in (row.get("earnings_json") or [])
+    ]
+    return StubData(
+        advice_number=row.get("advice_number", ""),
+        period_start=_d(row.get("period_start")),
+        period_end=_d(row.get("period_end")),
+        raw_gross=row.get("raw_gross", 0.0),
+        pto_balance=row.get("pto_balance", 0.0),
+        earnings=earnings,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _load_stubs_cached(user_id: str) -> dict[str, "StubData"]:
+    """Returns {period_start_iso: StubData} for all uploaded stubs."""
+    rows = auth.load_stubs(user_id)
+    return {row["period_start"]: _stub_from_db_row(row) for row in rows if row.get("period_start")}
+
+
+def _save_stub_to_db(user_id: str, stub: "StubData", period_start_iso: str) -> tuple[bool, str]:
+    return auth.save_stub(
+        user_id=user_id,
+        period_start=period_start_iso,
+        period_end=stub.period_end.isoformat() if stub.period_end else None,
+        raw_gross=stub.raw_gross or stub.computed_gross,
+        pto_balance=stub.pto_balance,
+        advice_number=stub.advice_number,
+        earnings=_stub_to_earnings_list(stub),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -94,24 +137,25 @@ def _delta_css(val: str) -> str:
 
 def _build_summary_df(
     results: list[PeriodResult],
-    actuals: dict[str, float],
+    stubs: dict[str, "StubData"],
     cfg: PayConfig,
 ) -> pd.DataFrame:
     rows = []
     for r in results:
         label  = r.period.label
         est    = r.total_estimated_gross()
-        actual = actuals.get(label)
+        stub   = stubs.get(r.period.start.isoformat())
+        actual = stub.total_gross if stub else None
         rows.append({
-            "Period":    label,
-            "Paydate":   r.period.paydate.strftime("%b %d, %Y"),
-            "Shifts":    len(r.week1.shifts) + len(r.week2.shifts),
-            "Paid Hrs":  f"{r.total_paid_hours:.1f}",
-            "OT Hrs":    f"{r.perdiem_hours:.1f}" if r.perdiem_hours else "—",
-            "Holidays":  ", ".join(h.strftime("%b %d") for h in r.period.holidays()) or "—",
+            "Period":     label,
+            "Paydate":    r.period.paydate.strftime("%b %d, %Y"),
+            "Shifts":     len(r.week1.shifts) + len(r.week2.shifts),
+            "Paid Hrs":   f"{r.total_paid_hours:.1f}",
+            "OT Hrs":     f"{r.perdiem_hours:.1f}" if r.perdiem_hours else "—",
+            "Holidays":   ", ".join(h.strftime("%b %d") for h in r.period.holidays()) or "—",
             "Est. Gross": f"${est:,.2f}",
-            "Actual":    f"${actual:,.2f}" if actual else "—",
-            "Δ":         f"${actual - est:+,.2f}" if actual else "—",
+            "Stub Gross": f"${actual:,.2f}" if actual else "—",
+            "Δ":          f"${actual - est:+,.2f}" if actual else "—",
         })
     return pd.DataFrame(rows)
 
@@ -245,12 +289,14 @@ def _match_stub(results: list[PeriodResult], stub: StubData) -> Optional[PeriodR
 
 def _show_detail(
     r: PeriodResult,
-    actuals: dict[str, float],
+    existing_stub: Optional[StubData],
     cfg: PayConfig,
     results: list[PeriodResult],
+    user: dict,
 ) -> None:
     label = r.period.label
     est   = r.total_estimated_gross()
+    period_start_iso = r.period.start.isoformat()
 
     hols = r.period.holidays()
     hol_str = f"  ·  holidays: {', '.join(h.strftime('%b %d') for h in hols)}" if hols else ""
@@ -275,68 +321,33 @@ def _show_detail(
         hide_index=True,
     )
 
-    # ---- Actual / stub section ----
+    # ---- Stub comparison ----
     st.divider()
     st.markdown("**Compare Against Actual Paystub**")
 
-    stub_key  = f"stub_{label}"
-    gross_key = f"gross_{label}"
+    uploaded = st.file_uploader(
+        "Replace stub for this period" if existing_stub else "Upload PDF stub for this period",
+        type=["pdf"],
+        key=f"up_{label}",
+        label_visibility="collapsed",
+        help="Drop the PDF pay stub for this period to get a line-by-line comparison.",
+    )
 
-    col_up, col_gross = st.columns([2, 1])
-
-    with col_up:
-        uploaded = st.file_uploader(
-            "Upload PDF stub for this period",
-            type=["pdf"],
-            key=f"up_{label}",
-            label_visibility="collapsed",
-            help="Drop the PDF pay stub for this period to get a line-by-line comparison.",
-        )
-
-    with col_gross:
-        saved_gross = actuals.get(label, "")
-        manual_gross = st.text_input(
-            "Or enter actual gross",
-            value=str(saved_gross) if saved_gross else "",
-            placeholder="e.g. 8234.56",
-            key=gross_key,
-            label_visibility="visible",
-        )
-        if st.button("Save", key=f"save_{label}"):
-            try:
-                g = float(manual_gross.replace(",", "").replace("$", ""))
-                actuals[label] = g
-                _save_actuals(actuals)
-                st.success(f"Saved ${g:,.2f}")
-                st.rerun()
-            except ValueError:
-                st.error("Enter a plain number, e.g. 8234.56")
-
-    # Resolve stub: uploaded file takes priority, else session state
-    stub: Optional[StubData] = None
+    stub: Optional[StubData] = existing_stub
     if uploaded is not None:
         try:
             with st.spinner("Parsing PDF…"):
-                stub = parse_stub(uploaded)
-            st.session_state[stub_key] = stub
+                parsed = parse_stub_pdf(uploaded)
+                new_stub = parsed[0] if parsed else None
+            if new_stub:
+                ok, err = _save_stub_to_db(user["id"], new_stub, period_start_iso)
+                if ok:
+                    st.cache_data.clear()
+                    stub = new_stub
+                else:
+                    st.error(f"Save failed: {err}")
         except Exception as exc:
             st.error(f"PDF parse error: {exc}")
-    elif stub_key in st.session_state:
-        stub = st.session_state[stub_key]
-
-    # Reconcile using manual gross if no full stub
-    actual_gross = actuals.get(label)
-    if stub is None and actual_gross:
-        # No full stub, but we have a total — show just the gross delta
-        delta = actual_gross - est
-        st.divider()
-        cc1, cc2, cc3 = st.columns(3)
-        cc1.metric("Engine Estimate", f"${est:,.2f}")
-        cc2.metric("Actual Gross",    f"${actual_gross:,.2f}")
-        cc3.metric("Δ (Actual − Engine)", f"${delta:+,.2f}",
-                   delta_color="normal" if delta >= 0 else "inverse")
-        _show_notes(r)
-        return
 
     if stub is not None:
         # If stub has dates, verify it matches this period
@@ -1151,41 +1162,22 @@ def _show_pto_update_gate(
                     st.error(f"Update failed: {err}")
 
 
-def _show_year_audit(results: list[PeriodResult], cfg: PayConfig, user: dict) -> None:
-    st.subheader("📂 Upload All Pay Stubs")
-    st.caption(
-        "Upload one or more PDF pay stubs (a single multi-stub PDF or individual files). "
-        "The parser handles multi-page PDFs with one stub per page."
-    )
-
-    uploaded_files = st.file_uploader(
-        "Pay stub PDFs",
-        type=["pdf"],
-        accept_multiple_files=True,
-        key="audit_pdfs",
-        label_visibility="collapsed",
-    )
-
-    # Parse on upload or when files change
-    if uploaded_files:
-        file_names = tuple(sorted(f.name for f in uploaded_files))
-        if st.session_state.get("audit_stub_files") != file_names:
-            with st.spinner(f"Parsing {len(uploaded_files)} file(s)…"):
-                stubs = _load_audit_stubs(uploaded_files)
-            st.session_state["audit_stubs"] = stubs
-            st.session_state["audit_stub_files"] = file_names
-
-    stubs: list[StubData] = st.session_state.get("audit_stubs", [])
+def _show_year_audit(
+    stubs_by_period: dict[str, "StubData"],
+    results: list[PeriodResult],
+    cfg: PayConfig,
+    user: dict,
+) -> None:
+    stubs = list(stubs_by_period.values())
 
     if not stubs:
-        st.info("Upload pay stubs above to begin the audit.")
+        st.info("No stubs uploaded yet. Upload a stub in the Schedule tab to begin the audit.")
         return
 
-    first_date = stubs[0].advice_date
-    last_date  = stubs[-1].advice_date
+    first_date = min((s.period_start for s in stubs if s.period_start), default=None)
+    last_date  = max((s.period_end   for s in stubs if s.period_end),   default=None)
     st.success(
-        f"**{len(stubs)} stub(s)** loaded  ·  "
-        f"{first_date} → {last_date}"
+        f"**{len(stubs)} stub(s)** loaded  ·  {first_date} → {last_date}"
     )
 
     t_pto, t_diff, t_plan = st.tabs([
@@ -1203,15 +1195,14 @@ def _show_year_audit(results: list[PeriodResult], cfg: PayConfig, user: dict) ->
     with t_plan:
         _show_stub_pto_plan_tab(stubs, results, cfg)
 
-    if stubs:
-        st.divider()
-        st.subheader("💰 Other Earnings")
-        st.caption(
-            "Pay corrections, CME stipends, bonuses, and other non-reconciled lines. "
-            "Displayed for tracking only — no engine comparison."
-        )
-        _show_other_earnings(stubs)
-        _show_pto_update_gate(stubs, cfg, user)
+    st.divider()
+    st.subheader("💰 Other Earnings")
+    st.caption(
+        "Pay corrections, CME stipends, bonuses, and other non-reconciled lines. "
+        "Displayed for tracking only — no engine comparison."
+    )
+    _show_other_earnings(stubs)
+    _show_pto_update_gate(stubs, cfg, user)
 
 
 # ---------------------------------------------------------------------------
@@ -1299,18 +1290,13 @@ def _show_settings(user: dict) -> None:
 # Onboarding (first-run stub upload)
 # ---------------------------------------------------------------------------
 
-def _show_onboarding(user: dict, results: list[PeriodResult]) -> None:
-    st.title("💵 APP Pay Reconciliation")
-    st.info(
-        "Upload your most recent pay stub to get started. "
-        "Only pay periods from that stub forward will be shown."
-    )
-
-    uploaded = st.file_uploader("Upload pay stub (PDF)", type=["pdf"])
+def _show_stub_upload(user: dict, results: list[PeriodResult]) -> None:
+    """Reusable upload widget — parses stub, saves to Supabase, reruns."""
+    uploaded = st.file_uploader("Upload PDF stub", type=["pdf"], key="new_stub_upload")
     if uploaded:
         try:
-            stubs = parse_stub_pdf(uploaded)
-            stub = stubs[0] if stubs else None
+            parsed = parse_stub_pdf(uploaded)
+            stub = parsed[0] if parsed else None
         except Exception as exc:
             st.error(f"Couldn't read stub: {exc}")
             stub = None
@@ -1319,40 +1305,62 @@ def _show_onboarding(user: dict, results: list[PeriodResult]) -> None:
             matched = _match_stub(results, stub)
             if matched:
                 st.success(f"Detected period: **{matched.period.label}**")
-                if st.button("Set as baseline and continue"):
-                    ok, err = auth.update_settings(
-                        user["id"], {"baseline_date": matched.period.start.isoformat()}
-                    )
+                if st.button("Save stub", key="save_new_stub"):
+                    ok, err = _save_stub_to_db(user["id"], stub, matched.period.start.isoformat())
                     if ok:
-                        st.session_state["user"]["baseline_date"] = matched.period.start.isoformat()
+                        st.cache_data.clear()
                         st.rerun()
                     else:
                         st.error(f"Save failed: {err}")
             else:
-                st.warning("Couldn't match stub to a pay period. Pick the period start date:")
-                manual = st.date_input("Pay period start date", key="onboard_manual")
-                if st.button("Set baseline"):
-                    ok, err = auth.update_settings(
-                        user["id"], {"baseline_date": manual.isoformat()}
-                    )
+                st.warning("Couldn't detect period. Pick the start date:")
+                manual = st.date_input("Pay period start date", key="new_stub_manual_date")
+                if st.button("Save with this date", key="save_new_stub_manual"):
+                    ok, err = _save_stub_to_db(user["id"], stub, manual.isoformat())
                     if ok:
-                        st.session_state["user"]["baseline_date"] = manual.isoformat()
+                        st.cache_data.clear()
                         st.rerun()
                     else:
                         st.error(f"Save failed: {err}")
 
-    st.divider()
-    st.caption("Or set a start date manually without uploading a stub:")
-    manual_date = st.date_input("Pay period start date", key="onboard_manual_only")
-    if st.button("Set baseline manually"):
-        ok, err = auth.update_settings(
-            user["id"], {"baseline_date": manual_date.isoformat()}
-        )
-        if ok:
-            st.session_state["user"]["baseline_date"] = manual_date.isoformat()
-            st.rerun()
-        else:
-            st.error(f"Save failed: {err}")
+
+def _show_onboarding(user: dict, results: list[PeriodResult]) -> None:
+    st.title("💵 APP Pay Reconciliation")
+    st.info(
+        "Upload your most recent pay stub to get started. "
+        "Only periods with an uploaded stub will be shown — no projections."
+    )
+
+    uploaded = st.file_uploader("Upload pay stub (PDF)", type=["pdf"])
+    if uploaded:
+        try:
+            parsed = parse_stub_pdf(uploaded)
+            stub = parsed[0] if parsed else None
+        except Exception as exc:
+            st.error(f"Couldn't read stub: {exc}")
+            stub = None
+
+        if stub:
+            matched = _match_stub(results, stub)
+            if matched:
+                st.success(f"Detected period: **{matched.period.label}**")
+                if st.button("Save and continue"):
+                    ok, err = _save_stub_to_db(user["id"], stub, matched.period.start.isoformat())
+                    if ok:
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(f"Save failed: {err}")
+            else:
+                st.warning("Couldn't detect period from stub. Pick the period start date:")
+                manual = st.date_input("Pay period start date", key="onboard_manual")
+                if st.button("Save with this date"):
+                    ok, err = _save_stub_to_db(user["id"], stub, manual.isoformat())
+                    if ok:
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(f"Save failed: {err}")
 
 
 # ---------------------------------------------------------------------------
@@ -1364,36 +1372,34 @@ def main() -> None:
         _show_auth_page()
         return
 
-    user    = st.session_state["user"]
-    accrual = auth.accrual_rate(user["tenure_bracket"])
-    cfg     = _load_cfg(float(user["base_rate"]), accrual)
-    results = _load_results(user["ics_url"], float(user["base_rate"]), accrual)
-    actuals = _load_actuals()
+    user        = st.session_state["user"]
+    accrual     = auth.accrual_rate(user["tenure_bracket"])
+    cfg         = _load_cfg(float(user["base_rate"]), accrual)
+    results_all = _load_results(user["ics_url"], float(user["base_rate"]), accrual)
+    stubs       = _load_stubs_cached(user["id"])
 
-    baseline = user.get("baseline_date")
-    if not baseline:
+    if not stubs:
         _build_sidebar(cfg, user)
-        _show_onboarding(user, results)
+        _show_onboarding(user, results_all)
         return
 
-    baseline_dt = date.fromisoformat(baseline)
-    results = [r for r in results if r.period.start >= baseline_dt]
+    # Only show periods that have an uploaded stub
+    results = [r for r in results_all if r.period.start.isoformat() in stubs]
 
     _build_sidebar(cfg, user)
 
     st.title("💵 APP Pay Reconciliation")
-
-    if not results:
-        st.warning("No shifts loaded — check your ShiftAdmin URL in Settings.")
-        return
 
     tab_sched, tab_audit, tab_settings = st.tabs(
         ["📋 Schedule", "🔍 Year Audit", "⚙️ Settings"]
     )
 
     with tab_sched:
-        df = _build_summary_df(results, actuals, cfg)
-        st.caption("Click a row to see the full engine breakdown and compare against a stub.")
+        with st.expander("📤 Upload a new pay stub"):
+            _show_stub_upload(user, results_all)
+
+        df = _build_summary_df(results, stubs, cfg)
+        st.caption("Click a row to see the full engine breakdown and stub comparison.")
         event = st.dataframe(
             df.style.map(_delta_css, subset=["Δ"]),
             on_select="rerun",
@@ -1404,31 +1410,27 @@ def main() -> None:
         selected = event.selection.rows
         if selected:
             idx = selected[0]
+            r   = results[idx]
+            stub = stubs.get(r.period.start.isoformat())
             st.divider()
-            _show_detail(results[idx], actuals, cfg, results)
+            _show_detail(r, stub, cfg, results_all, user)
         else:
             st.divider()
             total_est  = sum(r.total_estimated_gross() for r in results)
+            total_stub = sum(s.total_gross for s in stubs.values())
             total_eve  = sum(r.evening_pay() + r.ot_evening_pay() for r in results)
             total_wknd = sum(r.weekend_pay() + r.ot_weekend_pay() for r in results)
             total_hol  = sum(r.holiday_pay() for r in results)
             cc1, cc2, cc3, cc4 = st.columns(4)
-            cc1.metric("Total Estimated Gross", f"${total_est:,.2f}")
-            cc2.metric("Evening Differentials", f"${total_eve:,.2f}")
-            cc3.metric("Weekend Differentials", f"${total_wknd:,.2f}")
-            cc4.metric("Holiday Differentials", f"${total_hol:,.2f}")
-            if actuals:
-                paid   = sum(actuals.values())
-                unpaid = [r for r in results if r.period.label not in actuals]
-                st.caption(
-                    f"Actual gross entered for {len(actuals)} period(s): ${paid:,.2f}. "
-                    f"{len(unpaid)} period(s) estimated only."
-                )
+            cc1.metric("Engine Estimate (all)", f"${total_est:,.2f}")
+            cc2.metric("Stub Gross (all)",      f"${total_stub:,.2f}")
+            cc3.metric("Evening Differentials", f"${total_eve:,.2f}")
+            cc4.metric("Weekend Differentials", f"${total_wknd:,.2f}")
             st.divider()
             _show_pto_projection(results, cfg)
 
     with tab_audit:
-        _show_year_audit(results, cfg, user)
+        _show_year_audit(stubs, results_all, cfg, user)
 
     with tab_settings:
         _show_settings(user)

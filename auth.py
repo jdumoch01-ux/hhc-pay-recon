@@ -109,6 +109,48 @@ def update_settings(user_id: str, fields: dict) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def save_stub(
+    user_id: str,
+    period_start: str,
+    period_end: str | None,
+    raw_gross: float,
+    pto_balance: float,
+    advice_number: str,
+    earnings: list[dict],
+) -> tuple[bool, str]:
+    """Upsert a parsed stub into Supabase (keyed by user_id + period_start)."""
+    client = _get_client()
+    try:
+        client.table("stubs").upsert(
+            {
+                "user_id":       user_id,
+                "period_start":  period_start,
+                "period_end":    period_end,
+                "raw_gross":     raw_gross,
+                "pto_balance":   pto_balance,
+                "advice_number": advice_number,
+                "earnings_json": earnings,
+            },
+            on_conflict="user_id,period_start",
+        ).execute()
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def load_stubs(user_id: str) -> list[dict]:
+    """Return all stub rows for this user ordered by period_start."""
+    client = _get_client()
+    result = (
+        client.table("stubs")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("period_start")
+        .execute()
+    )
+    return result.data or []
+
+
 def verify_current_password(user_id: str, password: str) -> bool:
     """Check a user's current password without full login flow."""
     client = _get_client()
