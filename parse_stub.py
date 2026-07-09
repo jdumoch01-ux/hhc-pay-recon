@@ -265,6 +265,171 @@ def _clean(s: str) -> float:
         return 0.0
 
 
+# ---------------------------------------------------------------------------
+# Table-based parser (primary path — pdfplumber separates earnings/taxes columns)
+# ---------------------------------------------------------------------------
+
+def _parse_earnings_text(text: str, all_week_dates: list) -> list[EarningsLine]:
+    """
+    Parse the clean earnings column cell text extracted from a table.
+    No tax column data is present here, so no stop-keyword logic is needed.
+    """
+    earnings: list[EarningsLine] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        ll = stripped.lower()
+        if ll.startswith("description") or ll.startswith("-") or ll.startswith("total"):
+            continue
+
+        # Full earnings line: Desc  Date1  Date2  Rate  Hours  Current  [YTDHrs  YTDEarn]
+        m = _EARN_RE.match(stripped)
+        if m:
+            desc    = m.group(1).strip()
+            wb      = _parse_date(m.group(2))
+            we      = _parse_date(m.group(3))
+            rate    = _clean(m.group(4))
+            hours   = _clean(m.group(5))
+            current = _clean(m.group(6))
+            # _EARN_RE optional group 7 captures YTD hours (first trailing value);
+            # the NEXT trailing value (if any) is YTD earnings.
+            trailing = re.findall(_MONEY_RE, stripped[m.end():])
+            ytd      = _clean(trailing[0]) if trailing else 0.0
+            if desc.lower() not in _SKIP_DESCS:
+                if wb: all_week_dates.append(wb)
+                if we: all_week_dates.append(we)
+                earnings.append(EarningsLine(
+                    description=desc, week_begin=wb, week_end=we,
+                    rate=rate, hours=hours, current_amt=current,
+                    ytd_amt=ytd, category=_classify(desc, rate),
+                ))
+            continue
+
+        # Date-range line with no rate/hours (Lump Sum, bonuses, corrections)
+        m_dto = _DATE_ONLY_EARN_RE.match(stripped)
+        if m_dto:
+            desc    = m_dto.group(1).strip()
+            wb      = _parse_date(m_dto.group(2))
+            we      = _parse_date(m_dto.group(3))
+            current = _clean(m_dto.group(4))
+            ytd     = _clean(m_dto.group(5)) if m_dto.group(5) else 0.0
+            if desc.lower() not in _SKIP_DESCS and current != 0:
+                if wb: all_week_dates.append(wb)
+                if we: all_week_dates.append(we)
+                earnings.append(EarningsLine(
+                    description=desc, week_begin=wb, week_end=we,
+                    rate=0.0, hours=0.0, current_amt=current,
+                    ytd_amt=ytd, category=_classify(desc, 0.0),
+                ))
+            continue
+
+        # YTD-only fallback: Desc  0.00(current hrs)  YTDHrs  YTDEarnings
+        m2 = _FALLBACK_EARN_RE.match(stripped)
+        if m2:
+            desc            = m2.group(1).strip()
+            hours           = _clean(m2.group(2))
+            rate_or_current = _clean(m2.group(3))
+            ytd             = _clean(m2.group(4))
+            if desc.lower() not in _SKIP_DESCS and rate_or_current > 0:
+                # When hours==0.0, rate_or_current is YTD hours, not current dollars.
+                current_amt = 0.0 if hours == 0.0 else rate_or_current
+                earnings.append(EarningsLine(
+                    description=desc, week_begin=None, week_end=None,
+                    rate=0.0, hours=hours, current_amt=current_amt,
+                    ytd_amt=ytd, category=_classify(desc, 0.0),
+                ))
+
+    return earnings
+
+
+def _parse_page_from_tables(page) -> "Optional[StubData]":
+    """
+    Parse a pdfplumber page using table extraction.
+    Returns StubData on success, None if no earnings table is found (triggers text fallback).
+    """
+    tables = page.extract_tables()
+    if not tables:
+        return None
+
+    stub = StubData()
+    all_week_dates: list[date] = []
+    earnings_found = False
+
+    for table in tables:
+        if not table or not table[0]:
+            continue
+        row0 = " ".join(str(c or "") for c in table[0])
+
+        # Header table: Advice #, Advice Date, Pay Period
+        # Structure: row 0, col 2 = "Employee ID:\nAdvice #:\nAdvice Date:"
+        #            row 0, col 3 = "100061379\n7105724\n07/02/2026"
+        # Pair labels with values directly to avoid regex capturing employee ID.
+        if "Advice" in row0 or "Employee ID" in row0:
+            if table[0] and len(table[0]) >= 4:
+                labels = str(table[0][2] or "").splitlines()
+                values = str(table[0][3] or "").splitlines()
+                for label, value in zip(labels, values):
+                    ll = label.strip().lower()
+                    v  = value.strip()
+                    if "advice #" in ll or "advice number" in ll:
+                        stub.advice_number = v.lstrip("0") or v
+                    elif "advice date" in ll:
+                        stub.advice_date = _parse_date(v)
+                        stub.pay_date    = stub.advice_date
+            # Period falls through to earnings-date inference (no period label in header)
+
+        # Earnings + Taxes table (2 cols: HOURS AND EARNINGS | TAXES)
+        elif "HOURS AND EARNINGS" in row0:
+            earnings_found = True
+            if len(table) >= 2 and table[1] and table[1][0]:
+                stub.earnings.extend(
+                    _parse_earnings_text(str(table[1][0]), all_week_dates)
+                )
+            # Continuation-page TOTAL row: "TOTAL: hrs_curr gross_curr hrs_ytd gross_ytd"
+            if len(table) >= 3 and table[2] and table[2][0]:
+                nums = re.findall(_MONEY_RE, str(table[2][0]))
+                if len(nums) >= 4:
+                    if not stub.raw_gross:
+                        stub.raw_gross  = _clean(nums[1])
+                    if not stub.ytd_gross:
+                        stub.ytd_gross = _clean(nums[3])
+
+        # Summary table: TOTAL GROSS  FED TAXABLE GROSS  TOTAL TAXES  TOTAL DEDUCTIONS  NET PAY
+        elif "TOTAL GROSS" in row0:
+            if len(table) >= 2 and table[1] and table[1][0]:
+                for line in str(table[1][0]).splitlines():
+                    nums = re.findall(_MONEY_RE, line)
+                    if not nums:
+                        continue
+                    ll = line.strip().lower()
+                    if ll.startswith("current") and not stub.raw_gross:
+                        stub.raw_gross  = _clean(nums[0])
+                    elif ll.startswith("ytd") and not stub.ytd_gross:
+                        stub.ytd_gross = _clean(nums[0])
+
+        # PTO balance table
+        elif "Time Off Balance" in row0:
+            if len(table) >= 2 and table[1] and table[1][0]:
+                m = _PTO_BAL_RE.search(str(table[1][0]))
+                if m:
+                    try:
+                        stub.pto_balance = float(m.group(1))
+                    except ValueError:
+                        pass
+
+    if not earnings_found:
+        return None
+
+    if all_week_dates:
+        if stub.period_start is None:
+            stub.period_start = min(all_week_dates)
+        if stub.period_end is None:
+            stub.period_end = max(all_week_dates)
+
+    return stub
+
+
 def _parse_page(text: str) -> StubData:
     """Parse one page of text into a StubData."""
     stub = StubData(raw_text=text)
@@ -426,17 +591,33 @@ def _parse_page(text: str) -> StubData:
 def parse_stub_pdf(file_like) -> list[StubData]:
     """
     Parse a PDF that may contain one or more HHC pay stubs (one per page).
+    Tries table-based extraction first (clean column separation); falls back
+    to text-based extraction for pages where tables aren't detected.
     Returns a list sorted by advice_date ascending.
     """
     stubs: list[StubData] = []
     with pdfplumber.open(file_like) as pdf:
         for page in pdf.pages:
+            # Primary: table-based extraction (no earnings/taxes column merging)
+            stub = _parse_page_from_tables(page)
+            if stub is not None:
+                # Merge continuation pages (same advice # = page 2 of a long stub)
+                if (stubs and stub.advice_number
+                        and stub.advice_number == stubs[-1].advice_number):
+                    stubs[-1].earnings.extend(stub.earnings)
+                    if stub.raw_gross and not stubs[-1].raw_gross:
+                        stubs[-1].raw_gross = stub.raw_gross
+                    if stub.ytd_gross and not stubs[-1].ytd_gross:
+                        stubs[-1].ytd_gross = stub.ytd_gross
+                elif stub.earnings or stub.advice_number:
+                    stubs.append(stub)
+                continue
+
+            # Fallback: text-based extraction (original heuristic approach)
             text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
             if not text.strip():
                 continue
-            # Skip continuation pages (no Advice # found = likely page 2 of a long stub)
             if not _ADVICE_RE.search(text):
-                # Append text to previous stub if present
                 if stubs:
                     stubs[-1].raw_text += "\n" + text
                 continue
