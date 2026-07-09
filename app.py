@@ -12,7 +12,7 @@ from datetime import date
 
 from parse_stub import StubData, parse_stub, parse_stub_pdf
 from pay_rules import PayConfig
-from reconcile import PeriodResult, PTOProjectionRow, project_pto, reconcile
+from reconcile import PeriodResult, reconcile
 from reconcile_stubs import audit_pto, audit_differentials, total_underpayment
 
 import auth
@@ -146,8 +146,9 @@ def _build_summary_df(
     for r in results:
         label  = r.period.label
         est    = r.total_estimated_gross()
-        stub   = stubs.get(r.period.start.isoformat())
-        actual = stub.total_gross if stub else None
+        stub        = stubs.get(r.period.start.isoformat())
+        actual      = stub.total_gross    if stub else None
+        comparable  = stub.recurring_gross if stub else None
         rows.append({
             "Period":     label,
             "Paydate":    r.period.paydate.strftime("%b %d, %Y"),
@@ -157,7 +158,7 @@ def _build_summary_df(
             "Holidays":   ", ".join(h.strftime("%b %d") for h in r.period.holidays()) or "—",
             "Est. Gross": f"${est:,.2f}",
             "Stub Gross": f"${actual:,.2f}" if actual else "—",
-            "Δ":          f"${actual - est:+,.2f}" if actual else "—",
+            "Δ":          f"${comparable - est:+,.2f}" if comparable is not None else "—",
         })
     return pd.DataFrame(rows)
 
@@ -286,6 +287,112 @@ def _match_stub(results: list[PeriodResult], stub: StubData) -> Optional[PeriodR
 
 
 # ---------------------------------------------------------------------------
+# Discrepancy explanation + per-period draft email
+# ---------------------------------------------------------------------------
+
+def _show_discrepancy_and_email(
+    r: PeriodResult,
+    stub: StubData,
+    stub_gross: float,
+    delta: float,
+    est: float,
+    cfg: PayConfig,
+) -> None:
+    label = r.period.label
+    paydate_str = r.period.paydate.strftime("%B %d, %Y")
+
+    # Build a plain-language list of short-paid components.
+    problem_lines: list[str] = []
+
+    base_d = stub.base_pay - r.base_pay()
+    if base_d < -1.0:
+        problem_lines.append(
+            f"Base pay — expected ${r.base_pay():,.2f}, received ${stub.base_pay:,.2f} "
+            f"(${abs(base_d):,.2f} short, {r.regular_hours:.1f}h × ${cfg.base_rate:.2f})"
+        )
+
+    if r.evening_hours or stub.evening_pay:
+        eve_eng = round(r.evening_pay() + r.ot_evening_pay(), 2)
+        eve_d = stub.evening_pay - eve_eng
+        if eve_d < -1.0:
+            problem_lines.append(
+                f"Evening differential — expected ${eve_eng:,.2f}, received ${stub.evening_pay:,.2f} "
+                f"(${abs(eve_d):,.2f} short, {r.evening_hours:.1f}h in 15:00–23:00 window)"
+            )
+
+    if r.weekend_hours or stub.weekend_pay:
+        wknd_eng = round(r.weekend_pay() + r.ot_weekend_pay(), 2)
+        wknd_d = stub.weekend_pay - wknd_eng
+        if wknd_d < -1.0:
+            problem_lines.append(
+                f"Weekend differential — expected ${wknd_eng:,.2f}, received ${stub.weekend_pay:,.2f} "
+                f"(${abs(wknd_d):,.2f} short, {r.weekend_hours:.1f}h Fri 23:00–Sun 23:00)"
+            )
+
+    if r.holiday_hours or stub.holiday_pay:
+        hol_d = stub.holiday_pay - r.holiday_pay()
+        if hol_d < -1.0:
+            problem_lines.append(
+                f"Holiday pay — expected ${r.holiday_pay():,.2f}, received ${stub.holiday_pay:,.2f} "
+                f"(${abs(hol_d):,.2f} short, {r.holiday_hours:.1f}h × 50% holiday rate)"
+            )
+
+    if r.perdiem_hours or stub.ot_base_pay:
+        pd_d = stub.ot_base_pay - r.perdiem_pay()
+        if pd_d < -1.0:
+            problem_lines.append(
+                f"Per diem OT — expected ${r.perdiem_pay():,.2f}, received ${stub.ot_base_pay:,.2f} "
+                f"(${abs(pd_d):,.2f} short, {r.perdiem_hours:.1f}h over threshold)"
+            )
+
+    st.divider()
+    st.warning(
+        f"**Discrepancy detected: ${abs(delta):,.2f} short** — "
+        f"engine estimate ${est:,.2f} vs stub ${stub_gross:,.2f} (recurring pay only; "
+        f"bonuses and lump sums excluded from comparison)."
+    )
+
+    if problem_lines:
+        st.markdown("**Where the gap is:**")
+        for line in problem_lines:
+            st.markdown(f"- {line}")
+    else:
+        st.markdown(
+            "_The gross totals differ but no single line item is short by more than $1. "
+            "Check the comparison table above for rounding or classification differences._"
+        )
+
+    breakdown_text = (
+        "\n".join(f"  • {ln}" for ln in problem_lines)
+        if problem_lines
+        else "  (see attached pay stub for details)"
+    )
+
+    email_text = f"""To: Payroll Department
+
+Subject: Pay Discrepancy — {label} (pay date {paydate_str})
+
+Hi,
+
+I'm writing to request a review of my pay for the period {label} (pay date {paydate_str}).
+
+After comparing my pay stub against my scheduled hours, I'm showing a shortfall of approximately ${abs(delta):,.2f}. Based on my records, I should have received ${est:,.2f} in base pay and differentials, but my stub shows ${stub_gross:,.2f}.
+
+Where the gap appears:
+{breakdown_text}
+
+I've attached my pay stub for reference. Could you please review and let me know if a correction is warranted?
+
+Thank you,
+
+[Your name]
+[Your department / employee ID]"""
+
+    with st.expander("📧 Draft Email to Payroll"):
+        st.code(email_text, language=None)
+
+
+# ---------------------------------------------------------------------------
 # Detail panel
 # ---------------------------------------------------------------------------
 
@@ -382,12 +489,7 @@ def _show_detail(
                     "Check that you uploaded the right stub."
                 )
 
-        # Use stub gross if available, else fall back to computed
-        stub_gross = stub.total_gross or actual_gross or stub.computed_gross
-        if stub_gross == 0 and actual_gross:
-            stub.raw_gross = actual_gross
-            stub_gross = actual_gross
-
+        stub_gross = stub.recurring_gross or stub.computed_gross
         delta    = stub_gross - est
         accuracy = (1 - abs(delta) / stub_gross) * 100 if stub_gross else 100.0
 
@@ -406,6 +508,9 @@ def _show_detail(
             use_container_width=True,
             hide_index=True,
         )
+
+        if delta < -1.0:
+            _show_discrepancy_and_email(r, stub, stub_gross, delta, est, cfg)
 
         with st.expander("Raw extracted text / parsed lines"):
             st.text(stub.raw_text[:5000] if stub.raw_text else "(none)")
@@ -612,98 +717,7 @@ def _build_sidebar(cfg: PayConfig, user: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# PTO projection (schedule-based, existing logic)
-# ---------------------------------------------------------------------------
-
-def _show_pto_projection(results: list[PeriodResult], cfg: PayConfig) -> None:
-    st.subheader("🏖️ PTO Balance Projection")
-
-    col_bal, col_pto = st.columns([1, 1])
-    with col_bal:
-        starting_balance = st.number_input(
-            "Starting PTO balance (hours)",
-            value=123.92,
-            step=0.01,
-            format="%.2f",
-            help="PTO balance from your most recent pay stub. Last known: 123.92h on 05/21/2026.",
-        )
-    with col_pto:
-        extra_aug_pto = st.number_input(
-            "Additional PTO to take in August (hours)",
-            value=24.0,
-            step=1.0,
-            format="%.1f",
-            help="Hours of planned PTO in August beyond what the schedule already shows.",
-        )
-
-    # Infer last scheduled date
-    last_sched = max(
-        (s.start.date() for r in results for wk in (r.week1, r.week2) for s in wk.shifts),
-        default=date.today(),
-    )
-
-    aug_paydate = date(2026, 8, 28)
-
-    rows = project_pto(
-        results,
-        starting_balance=starting_balance,
-        starting_after_paydate=date(2026, 5, 22),
-        extra_pto={aug_paydate: extra_aug_pto} if extra_aug_pto else {},
-        last_scheduled=last_sched,
-        project_through=date(2026, 9, 30),
-    )
-
-    if not rows:
-        st.caption("No future periods to project.")
-        return
-
-    table_rows = []
-    for row in rows:
-        table_rows.append({
-            "Period":    row.period_label,
-            "Paydate":   row.paydate.strftime("%b %d, %Y"),
-            "Accrual":   f"+{row.accrual:.2f}h",
-            "PTO Used":  f"−{row.pto_used:.1f}h" if row.pto_used else "—",
-            "Balance":   f"{row.balance:.2f}h",
-            "Schedule":  "✅" if row.schedule_complete else "⚠️ partial",
-        })
-
-    proj_df = pd.DataFrame(table_rows)
-
-    def _bal_colour(val: str) -> str:
-        try:
-            v = float(val.replace("h", ""))
-            if v < 40:   return "color: #e74c3c; font-weight:600"
-            if v < 80:   return "color: #f39c12; font-weight:600"
-            return "color: #2ecc71; font-weight:600"
-        except ValueError:
-            return ""
-
-    st.dataframe(
-        proj_df.style.map(_bal_colour, subset=["Balance"]),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    sep_rows = [r for r in rows if r.paydate >= date(2026, 9, 1)]
-    if sep_rows:
-        sep_bal = sep_rows[0].balance
-        colour = "green" if sep_bal >= 80 else "orange" if sep_bal >= 40 else "red"
-        st.markdown(
-            f"**Entering September (paydate {sep_rows[0].paydate.strftime('%b %d')}):** "
-            f"<span style='color:{colour}; font-weight:700'>{sep_bal:.2f}h</span> PTO remaining",
-            unsafe_allow_html=True,
-        )
-
-    st.caption(
-        f"PTO rule: {cfg.pto_standard_weekly_hours:.0f}h/week standard — shortfall charged as PTO. "
-        f"Accrual: +{cfg.pto_accrual_per_period:.2f}h/period (verified from Feb–May 2026 stubs). "
-        f"⚠️ = week has no posted shifts yet (schedule through {last_sched.strftime('%b %d')})."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Year Audit — multi-stub upload + three sub-tabs
+# Year Audit — multi-stub upload + two sub-tabs
 # ---------------------------------------------------------------------------
 
 def _load_audit_stubs(uploaded_files) -> list[StubData]:
@@ -850,7 +864,7 @@ def _show_diff_audit_tab(
             continue
 
         est        = r.total_estimated_gross()
-        stub_gross = stub.total_gross or stub.computed_gross
+        stub_gross = stub.recurring_gross or stub.computed_gross
         gross_d    = stub_gross - est
         total_gross_delta += gross_d
 
@@ -911,7 +925,7 @@ def _show_diff_audit_tab(
         r = _match_stub(results, stub)
         if r is None:
             continue
-        stub_gross = stub.total_gross or stub.computed_gross
+        stub_gross = stub.recurring_gross or stub.computed_gross
         with st.expander(f"{r.period.label}  —  Gross Δ ${stub_gross - r.total_estimated_gross():+,.2f}"):
             comp_df = _comparison_df(r, stub, cfg)
             st.dataframe(
@@ -929,193 +943,6 @@ def _show_diff_audit_tab(
                         for e in stub.earnings
                     ]), use_container_width=True, hide_index=True)
 
-    # Draft email to payroll
-    underpaid_periods = [
-        row for row in summary_rows
-        if row.get("Gross Δ", "—") not in ("—", "$+0.00")
-        and row.get("Gross Δ", "—").startswith("$-")
-    ]
-    if underpaid_periods or total_diff_delta < -1.0:
-        st.divider()
-        st.subheader("📧 Draft Email to Payroll")
-        st.caption("Copy and paste this into an email to your payroll department.")
-
-        total_underpaid = abs(min(0.0, total_gross_delta))
-        eve_underpaid   = abs(min(0.0, total_eve_delta))
-        wknd_underpaid  = abs(min(0.0, total_wknd_delta))
-
-        period_list = "\n".join(
-            f"  • {row['Period']} (pay date {row['Advice Date']}): "
-            f"expected {row['Engine Est']}, paid {row['Stub Gross']}, "
-            f"difference {row['Gross Δ']}"
-            for row in underpaid_periods
-        )
-
-        diff_breakdown = []
-        if eve_underpaid > 1.0:
-            diff_breakdown.append(f"evening differential: ${eve_underpaid:,.2f} short")
-        if wknd_underpaid > 1.0:
-            diff_breakdown.append(f"weekend differential: ${wknd_underpaid:,.2f} short")
-        diff_str = " and ".join(diff_breakdown) if diff_breakdown else "differential pay"
-
-        email_text = f"""To: Payroll Department
-
-Subject: Pay Discrepancy — Differential Pay Review Request
-
-Hi,
-
-I am writing to request a review of my pay for the following pay periods, where I believe there may be a discrepancy in my differential pay.
-
-After reviewing my pay stubs against my scheduled hours, I found that I was underpaid a total of approximately ${total_underpaid:,.2f} in {diff_str} across the following period(s):
-
-{period_list if period_list else "  (see attached stubs for details)"}
-
-Based on my understanding of our differential pay structure — including evening differentials for hours worked between 3:00 PM and 11:00 PM, and weekend differentials for hours worked Friday 11:00 PM through Sunday 11:00 PM — my records indicate a shortfall of approximately ${total_underpaid:,.2f}.
-
-I have attached my pay stubs for reference. Could you please review and let me know if a correction is warranted?
-
-Thank you for your time.
-
-[Your name]
-[Your department]"""
-
-        st.code(email_text, language=None)
-
-
-def _show_stub_pto_plan_tab(
-    stubs: list[StubData],
-    results: list[PeriodResult],
-    cfg: PayConfig,
-) -> None:
-    """PTO Plan: historical trajectory from stubs + forward projection."""
-    if not stubs:
-        return
-
-    latest = stubs[-1]
-    latest_balance = latest.pto_balance
-    latest_paydate = latest.advice_date or date.min
-
-    st.markdown(
-        f"**Latest stub:** {latest.period_start} → {latest.period_end}  "
-        f"·  balance **{latest_balance:.2f}h**  ·  paydate **{latest_paydate}**"
-    )
-
-    # Historical trajectory
-    st.markdown("#### Historical PTO Balance (from stubs)")
-    ACCRUAL = cfg.pto_accrual_per_period
-    running = latest_balance - ACCRUAL + stubs[0].pto_hours_used  # back-calc opening
-    hist_rows = []
-    for stub in stubs:
-        running += ACCRUAL
-        running -= stub.pto_hours_used
-        period_str = (
-            f"{stub.period_start.strftime('%b %d')}–{stub.period_end.strftime('%b %d, %Y')}"
-            if stub.period_start and stub.period_end else str(stub.advice_date)
-        )
-        match_flag = "✅" if abs(running - stub.pto_balance) < 0.5 else f"⚠️ stub={stub.pto_balance:.2f}"
-        hist_rows.append({
-            "Period":       period_str,
-            "Advice Date":  str(stub.advice_date or "—"),
-            "PTO Used":     f"−{stub.pto_hours_used:.2f}h",
-            "Stub Balance": f"{stub.pto_balance:.2f}h",
-            "Calc Balance": f"{running:.2f}h",
-            "Match":        match_flag,
-        })
-
-    st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
-
-    # Forward projection
-    st.markdown("#### Forward Projection")
-
-    last_sched = max(
-        (s.start.date() for r in results for wk in (r.week1, r.week2) for s in wk.shifts),
-        default=date.today(),
-    )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        extra_pto_h = st.number_input(
-            "Additional planned PTO (hours)",
-            value=24.0, step=1.0, format="%.1f",
-            key="stub_plan_extra_pto",
-        )
-    with col2:
-        extra_paydate_str = st.text_input(
-            "On paydate (YYYY-MM-DD)",
-            value="2026-08-28",
-            key="stub_plan_paydate",
-        )
-
-    try:
-        extra_pd = date.fromisoformat(extra_paydate_str)
-        extra_pto_map = {extra_pd: extra_pto_h} if extra_pto_h else {}
-    except ValueError:
-        st.error("Enter date as YYYY-MM-DD")
-        extra_pto_map = {}
-
-    proj_rows = project_pto(
-        results,
-        starting_balance=latest_balance,
-        starting_after_paydate=latest_paydate,
-        extra_pto=extra_pto_map,
-        last_scheduled=last_sched,
-        project_through=date(2026, 12, 31),
-    )
-
-    if not proj_rows:
-        st.caption("No future periods beyond the latest stub.")
-        return
-
-    proj_table = []
-    for row in proj_rows:
-        proj_table.append({
-            "Period":    row.period_label,
-            "Paydate":   row.paydate.strftime("%b %d, %Y"),
-            "Accrual":   f"+{row.accrual:.2f}h",
-            "PTO Used":  f"−{row.pto_used:.1f}h" if row.pto_used else "—",
-            "Balance":   f"{row.balance:.2f}h",
-            "Schedule":  "✅" if row.schedule_complete else "⚠️",
-        })
-
-    def _bal_colour(val: str) -> str:
-        try:
-            v = float(val.replace("h", ""))
-            if v < 40:  return "color: #e74c3c; font-weight:600"
-            if v < 80:  return "color: #f39c12; font-weight:600"
-            return "color: #2ecc71; font-weight:600"
-        except ValueError:
-            return ""
-
-    st.dataframe(
-        pd.DataFrame(proj_table).style.map(_bal_colour, subset=["Balance"]),
-        use_container_width=True, hide_index=True,
-    )
-
-    sep_rows = [r for r in proj_rows if r.paydate >= date(2026, 9, 1)]
-    if sep_rows:
-        sep_bal = sep_rows[0].balance
-        colour = "green" if sep_bal >= 80 else "orange" if sep_bal >= 40 else "red"
-        st.markdown(
-            f"**Entering September:** "
-            f"<span style='color:{colour}; font-weight:700'>{sep_bal:.2f}h</span> PTO remaining",
-            unsafe_allow_html=True,
-        )
-
-    eoy_rows = [r for r in proj_rows if r.paydate >= date(2026, 12, 1)]
-    if eoy_rows:
-        eoy_bal = eoy_rows[-1].balance
-        colour = "green" if eoy_bal >= 40 else "orange" if eoy_bal >= 0 else "red"
-        st.markdown(
-            f"**End of Year:** "
-            f"<span style='color:{colour}; font-weight:700'>{eoy_bal:.2f}h</span> PTO balance",
-            unsafe_allow_html=True,
-        )
-
-    st.caption(
-        f"Accrual: +{cfg.pto_accrual_per_period:.2f}h/period. "
-        "PTO used from ICS schedule (36h rule). "
-        "⚠️ = schedule not yet posted for that week."
-    )
 
 
 def _show_other_earnings(stubs: list[StubData]) -> None:
@@ -1238,20 +1065,13 @@ def _show_year_audit(
         f"**{len(stubs)} stub(s)** loaded  ·  {first_date} → {last_date}"
     )
 
-    t_pto, t_diff, t_plan = st.tabs([
-        "📊 PTO Audit",
-        "💰 Differential Audit",
-        "🏖️ PTO Plan",
-    ])
+    t_pto, t_diff = st.tabs(["📊 PTO Audit", "💰 Differential Audit"])
 
     with t_pto:
         _show_pto_audit_tab(stubs, cfg)
 
     with t_diff:
         _show_diff_audit_tab(stubs, results, cfg)
-
-    with t_plan:
-        _show_stub_pto_plan_tab(stubs, results, cfg)
 
     st.divider()
     st.subheader("💰 Other Earnings")
@@ -1476,9 +1296,6 @@ def main() -> None:
             stub = stubs.get(r.period.start.isoformat())
             st.divider()
             _show_detail(r, stub, cfg, results_all, user)
-        else:
-            st.divider()
-            _show_pto_projection(results, cfg)
 
     with tab_audit:
         _show_year_audit(stubs, results_all, cfg, user)

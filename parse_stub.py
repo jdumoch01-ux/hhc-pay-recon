@@ -105,6 +105,16 @@ class StubData:
     def total_gross(self) -> float:
         return self.raw_gross or self.computed_gross
 
+    @property
+    def recurring_gross(self) -> float:
+        """Gross excluding one-time payments (Lump Sum, bonuses, reimbursements).
+        One-time payments have hours=0, rate=0, and a non-zero current amount —
+        they are date-range payments not tied to hours worked."""
+        return round(sum(
+            e.current_amt for e in self.earnings
+            if not (e.hours == 0.0 and e.rate == 0.0 and e.current_amt > 0)
+        ), 2)
+
     def amount_by_cat(self, *cats: str) -> float:
         return round(sum(e.current_amt for e in self.earnings if e.category in cats), 2)
 
