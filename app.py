@@ -432,7 +432,19 @@ def _show_auth_page() -> None:
     st.caption("Advanced Practice Provider Pay Audit Tool")
     st.divider()
 
+    st.info(
+        "⚠️ **Legal Disclaimer:** This tool is an independent resource and is not affiliated "
+        "with, endorsed by, or connected to any employer or payroll system. All pay estimates "
+        "are generated from your personally entered schedule data and pay parameters. Results "
+        "are provided for informational purposes only. You are solely responsible for "
+        "verifying all information against your official pay stubs and employer records "
+        "before taking any action."
+    )
+    st.divider()
+
     tab_login, tab_register = st.tabs(["Login", "Create Account"])
+
+
 
     with tab_login:
         with st.form("login_form"):
