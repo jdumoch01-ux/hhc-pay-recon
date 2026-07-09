@@ -50,10 +50,11 @@ def _save_actuals(actuals: dict[str, float]) -> None:
 # ---------------------------------------------------------------------------
 
 @st.cache_data(show_spinner="Fetching schedule from ShiftAdmin…")
-def _load_results(ics_url: str) -> list[PeriodResult]:
+def _load_results(ics_url: str, base_rate: float, accrual_per_period: float) -> list[PeriodResult]:
     from schedule import load_all_shifts
+    cfg = PayConfig.load(base_rate_override=base_rate, accrual_override=accrual_per_period)
     shifts = load_all_shifts(ics_url=ics_url)
-    return reconcile(shifts=shifts)
+    return reconcile(shifts=shifts, cfg=cfg)
 
 
 @st.cache_data(show_spinner=False)
@@ -1299,7 +1300,7 @@ def main() -> None:
     user    = st.session_state["user"]
     accrual = auth.accrual_rate(user["tenure_bracket"])
     cfg     = _load_cfg(float(user["base_rate"]), accrual)
-    results = _load_results(user["ics_url"])
+    results = _load_results(user["ics_url"], float(user["base_rate"]), accrual)
     actuals = _load_actuals()
 
     _build_sidebar(cfg, user)
