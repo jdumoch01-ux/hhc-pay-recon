@@ -1309,7 +1309,8 @@ def _show_onboarding(user: dict, results: list[PeriodResult]) -> None:
     uploaded = st.file_uploader("Upload pay stub (PDF)", type=["pdf"])
     if uploaded:
         try:
-            stub = parse_stub_pdf(uploaded)
+            stubs = parse_stub_pdf(uploaded)
+            stub = stubs[0] if stubs else None
         except Exception as exc:
             st.error(f"Couldn't read stub: {exc}")
             stub = None
