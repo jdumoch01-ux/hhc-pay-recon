@@ -1007,6 +1007,78 @@ def _show_other_earnings(stubs: list[StubData]) -> None:
     )
 
 
+def _show_pto_update_gate(
+    stubs: list[StubData],
+    cfg: PayConfig,
+    user: dict,
+) -> None:
+    """
+    After stub upload: run PTO audit on the most recent stub.
+    If clean, offer to update stored PTO balance. If discrepant, block and flag.
+    """
+    if not stubs:
+        return
+
+    latest_stub = max(stubs, key=lambda s: s.advice_date or date.min)
+    if latest_stub.pto_balance <= 0:
+        return
+
+    pto_rows = audit_pto([latest_stub], cfg)
+    discrepant_weeks = [
+        w for r in pto_rows for w in r.weeks
+        if abs(w["diff"]) > 0.5
+    ]
+
+    st.divider()
+    st.subheader("📋 PTO Balance Update")
+    st.caption(
+        f"Most recent stub: **{latest_stub.advice_date}**  |  "
+        f"Reported balance: **{latest_stub.pto_balance:.2f}h**  |  "
+        f"Stored balance: **{user['pto_balance']:.2f}h**"
+    )
+
+    if not discrepant_weeks:
+        st.success("PTO audit clean — no discrepancies in the most recent stub.")
+        if abs(latest_stub.pto_balance - float(user["pto_balance"])) > 0.1:
+            if st.button(
+                f"Update stored balance to {latest_stub.pto_balance:.2f}h",
+                use_container_width=True,
+            ):
+                ok, err = auth.update_settings(
+                    user["id"], {"pto_balance": latest_stub.pto_balance}
+                )
+                if ok:
+                    st.session_state["user"]["pto_balance"] = latest_stub.pto_balance
+                    st.success(
+                        f"PTO balance updated to {latest_stub.pto_balance:.2f}h."
+                    )
+                else:
+                    st.error(f"Update failed: {err}")
+        else:
+            st.caption("Stored balance already matches stub — no update needed.")
+    else:
+        st.warning(
+            f"PTO discrepancy detected in {len(discrepant_weeks)} week(s) — "
+            "balance not updated automatically. Review the PTO Audit tab."
+        )
+        if st.checkbox("I've reviewed the discrepancy and want to override anyway"):
+            if st.button(
+                f"Force update to {latest_stub.pto_balance:.2f}h",
+                type="primary",
+                use_container_width=True,
+            ):
+                ok, err = auth.update_settings(
+                    user["id"], {"pto_balance": latest_stub.pto_balance}
+                )
+                if ok:
+                    st.session_state["user"]["pto_balance"] = latest_stub.pto_balance
+                    st.success(
+                        f"PTO balance updated to {latest_stub.pto_balance:.2f}h."
+                    )
+                else:
+                    st.error(f"Update failed: {err}")
+
+
 def _show_year_audit(results: list[PeriodResult], cfg: PayConfig, user: dict) -> None:
     st.subheader("📂 Upload All Pay Stubs")
     st.caption(
@@ -1067,6 +1139,7 @@ def _show_year_audit(results: list[PeriodResult], cfg: PayConfig, user: dict) ->
             "Displayed for tracking only — no engine comparison."
         )
         _show_other_earnings(stubs)
+        _show_pto_update_gate(stubs, cfg, user)
 
 
 # ---------------------------------------------------------------------------
