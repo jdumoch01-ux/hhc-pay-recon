@@ -18,13 +18,13 @@ class PayConfig:
     admin_hours_per_week: float
     ot_threshold: float
     # Differential minimums
-    min_qualifying_hours: float        # hours in window required per shift to qualify (eve/wknd)
-    night_min_qualifying_hours: float  # separate minimum for night diff (HHC pays any night hrs)
-    # Evening (15:00–23:00)
+    min_qualifying_hours: float        # hours in window required per shift to qualify (general)
+    night_min_qualifying_hours: float  # separate minimum for night diff
+    # Evening (15:00–18:30 at HHC)
     evening_rate: float
     evening_start: time
     evening_end: time
-    # Night (23:00–07:00)
+    # Night (18:30–07:00 at HHC)
     night_rate: float
     night_start: time
     night_end: time
@@ -127,13 +127,13 @@ def _raw_hours_per_bucket(
 ) -> tuple[float, float, float, float]:
     """
     Return (evening_h, night_h, weekend_h, holiday_h) for a shift,
-    BEFORE applying the 4-hour minimum rule.
-    Iterates in 1-hour steps; handles DST and overnight windows correctly.
+    BEFORE applying minimum rules.
+    Iterates in 30-min steps for accuracy at the 18:30 evening/night boundary.
     """
     evening_h = night_h = weekend_h = holiday_h = 0.0
     cursor = start
     while cursor < end:
-        next_tick = min(cursor + timedelta(hours=1), end)
+        next_tick = min(cursor + timedelta(minutes=30), end)
         frac = (next_tick - cursor).total_seconds() / 3600.0
         mid = cursor + (next_tick - cursor) / 2
 
@@ -152,11 +152,7 @@ def _raw_hours_per_bucket(
 
 
 def compute_shift_earnings(shift, cfg: PayConfig) -> ShiftEarnings:
-    """
-    Compute differential hour buckets for one Shift, applying the minimum
-    qualifying hours rule. Night uses a separate (lower) minimum because HHC
-    pays night diff for any hours past 23:00 with no 4h threshold.
-    """
+    """Compute differential hour buckets for one Shift, applying minimum rules."""
     ev, ni, wk, ho = _raw_hours_per_bucket(shift.start, shift.end, cfg)
     min_h = cfg.min_qualifying_hours
     min_ni = cfg.night_min_qualifying_hours

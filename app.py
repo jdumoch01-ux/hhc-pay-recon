@@ -190,12 +190,12 @@ def _engine_breakdown_df(r: PeriodResult, cfg: PayConfig) -> pd.DataFrame:
     if r.evening_hours:
         rows.append(_row(
             "Evening Diff", r.evening_hours, cfg.evening_rate, r.evening_pay(),
-            "15:00–23:00, ≥4h/shift",
+            "15:00–18:30, any hours",
         ))
     if r.night_hours:
         rows.append(_row(
             "Night Diff", r.night_hours, cfg.night_rate, r.night_pay(),
-            "23:00–07:00, any hours",
+            "18:30–07:00, any hours",
         ))
     if r.ot_evening_pay():
         rows.append(_row(
@@ -206,7 +206,7 @@ def _engine_breakdown_df(r: PeriodResult, cfg: PayConfig) -> pd.DataFrame:
     if r.weekend_hours:
         rows.append(_row(
             "Weekend Diff", r.weekend_hours, cfg.weekend_rate, r.weekend_pay(),
-            "Fri 23:00–Sun 23:00, ≥4h/shift",
+            "Fri 23:00–Sun 23:00, any hours",
         ))
     if r.ot_weekend_pay():
         rows.append(_row(
@@ -334,7 +334,7 @@ def _show_discrepancy_and_email(
         if eve_d < -1.0:
             problem_lines.append(
                 f"Evening differential — expected ${eve_eng:,.2f}, received ${stub.evening_pay:,.2f} "
-                f"(${abs(eve_d):,.2f} short, {r.evening_hours:.1f}h in 15:00–23:00 window)"
+                f"(${abs(eve_d):,.2f} short, {r.evening_hours:.1f}h in 15:00–18:30 window)"
             )
 
     if r.night_hours or stub.night_pay:
@@ -585,8 +585,8 @@ def _show_detail(
                         "Wknd (raw)": round(wk_h, 1),
                     })
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                st.caption(f"Raw = hours in window before 4h minimum rule. "
-                           f"Totals after minimum: eve {wk.evening_hours:.1f}h · "
+                st.caption(f"Eve = 15:00–18:30 · Night = 18:30–07:00 · Wknd = Fri 23:00–Sun 23:00. "
+                           f"Totals credited: eve {wk.evening_hours:.1f}h · "
                            f"night {wk.night_hours:.1f}h · wknd {wk.weekend_hours:.1f}h")
 
     _show_notes(r, stub)
@@ -747,9 +747,9 @@ def _build_sidebar(cfg: PayConfig, user: dict) -> None:
             f"OT (per diem): **${cfg.perdiem_rate}/hr**  \n"
             f"Admin: **{cfg.admin_hours_per_week:.0f}h/wk** (unconditional)  \n"
             f"OT threshold: **{cfg.ot_threshold:.0f}h** biweekly  \n\n"
-            f"Eve diff: **+${cfg.evening_rate}/hr** (15:00–23:00, ≥4h)  \n"
-            f"Night diff: **+${cfg.night_rate}/hr** (23:00–07:00, ≥4h)  \n"
-            f"Wknd diff: **+${cfg.weekend_rate}/hr** (Fri 23:00–Sun 23:00, ≥4h)  \n"
+            f"Eve diff: **+${cfg.evening_rate}/hr** (15:00–18:30)  \n"
+            f"Night diff: **+${cfg.night_rate}/hr** (18:30–07:00)  \n"
+            f"Wknd diff: **+${cfg.weekend_rate}/hr** (Fri 23:00–Sun 23:00)  \n"
             f"Holiday: **+50% base** on holidays  \n"
         )
         st.divider()

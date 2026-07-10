@@ -8,13 +8,13 @@ admin_hours_per_week = 4.0
 ot_threshold       = 80.0
 
 [differentials]
-min_qualifying_hours      = 4.0
+min_qualifying_hours      = 0.0   # no per-shift minimum for any differential
 night_min_qualifying_hours = 0.0
 evening_rate  = 8.40
 evening_start = "15:00"
-evening_end   = "23:00"
+evening_end   = "18:30"   # HHC evening window is 15:00–18:30 (3.5h); night starts at 18:30
 night_rate    = 11.00
-night_start   = "23:00"
+night_start   = "18:30"   # confirmed from stub: night premium starts at 18:30, not 23:00
 night_end     = "07:00"
 weekend_rate       = 11.00
 weekend_start_day  = 4
