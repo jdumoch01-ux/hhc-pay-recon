@@ -556,25 +556,33 @@ def _show_detail(
 
     # ---- Week-by-week shift detail ----
     with st.expander("Week-by-week shift detail"):
+        from pay_rules import _raw_hours_per_bucket
         for wk in (r.week1, r.week2):
             st.markdown(
                 f"**Wk{wk.week_num}** "
                 f"({wk.start.strftime('%b %d')}–{wk.end.strftime('%b %d')}): "
                 f"{wk.actual_hours:.1f}h actual + {wk.admin_hours:.0f}h admin = "
                 f"{wk.total_hours:.1f}h  ·  "
-                f"eve {wk.evening_hours:.1f}h · wknd {wk.weekend_hours:.1f}h · "
-                f"hol {wk.holiday_hours:.1f}h"
+                f"eve {wk.evening_hours:.1f}h · night {wk.night_hours:.1f}h · "
+                f"wknd {wk.weekend_hours:.1f}h · hol {wk.holiday_hours:.1f}h"
             )
             if wk.shifts:
-                st.dataframe(pd.DataFrame([
-                    {
-                        "Shift":  s.summary,
-                        "Start":  s.start.strftime("%a %b %d %H:%M"),
-                        "End":    s.end.strftime("%H:%M"),
-                        "Hours":  round(s.hours, 2),
-                    }
-                    for s in wk.shifts
-                ]), use_container_width=True, hide_index=True)
+                rows = []
+                for s in wk.shifts:
+                    ev, ni, wk_h, ho = _raw_hours_per_bucket(s.start, s.end, cfg)
+                    rows.append({
+                        "Shift":      s.summary,
+                        "Start":      s.start.strftime("%a %b %d %H:%M"),
+                        "End":        s.end.strftime("%H:%M"),
+                        "Hours":      round(s.hours, 2),
+                        "Eve (raw)":  round(ev, 1),
+                        "Night (raw)": round(ni, 1),
+                        "Wknd (raw)": round(wk_h, 1),
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.caption(f"Raw = hours in window before 4h minimum rule. "
+                           f"Totals after minimum: eve {wk.evening_hours:.1f}h · "
+                           f"night {wk.night_hours:.1f}h · wknd {wk.weekend_hours:.1f}h")
 
     _show_notes(r, stub)
 
