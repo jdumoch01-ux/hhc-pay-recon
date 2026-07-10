@@ -18,7 +18,8 @@ class PayConfig:
     admin_hours_per_week: float
     ot_threshold: float
     # Differential minimums
-    min_qualifying_hours: float   # hours in window required per shift to qualify
+    min_qualifying_hours: float        # hours in window required per shift to qualify (eve/wknd)
+    night_min_qualifying_hours: float  # separate minimum for night diff (HHC pays any night hrs)
     # Evening (15:00–23:00)
     evening_rate: float
     evening_start: time
@@ -59,6 +60,7 @@ class PayConfig:
             admin_hours_per_week=p["admin_hours_per_week"],
             ot_threshold=p["ot_threshold"],
             min_qualifying_hours=d["min_qualifying_hours"],
+            night_min_qualifying_hours=d.get("night_min_qualifying_hours", d["min_qualifying_hours"]),
             evening_rate=d["evening_rate"],
             evening_start=time.fromisoformat(d["evening_start"]),
             evening_end=time.fromisoformat(d["evening_end"]),
@@ -151,15 +153,17 @@ def _raw_hours_per_bucket(
 
 def compute_shift_earnings(shift, cfg: PayConfig) -> ShiftEarnings:
     """
-    Compute differential hour buckets for one Shift, applying the
-    4-hour minimum qualifying rule to each differential independently.
+    Compute differential hour buckets for one Shift, applying the minimum
+    qualifying hours rule. Night uses a separate (lower) minimum because HHC
+    pays night diff for any hours past 23:00 with no 4h threshold.
     """
     ev, ni, wk, ho = _raw_hours_per_bucket(shift.start, shift.end, cfg)
     min_h = cfg.min_qualifying_hours
+    min_ni = cfg.night_min_qualifying_hours
     return ShiftEarnings(
         actual_hours=shift.hours,
         evening_hours=ev if ev >= min_h else 0.0,
-        night_hours=ni   if ni >= min_h else 0.0,
+        night_hours=ni   if ni >= min_ni else 0.0,
         weekend_hours=wk if wk >= min_h else 0.0,
         holiday_hours=ho if ho >= min_h else 0.0,
     )

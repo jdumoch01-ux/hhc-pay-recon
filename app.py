@@ -192,6 +192,11 @@ def _engine_breakdown_df(r: PeriodResult, cfg: PayConfig) -> pd.DataFrame:
             "Evening Diff", r.evening_hours, cfg.evening_rate, r.evening_pay(),
             "15:00–23:00, ≥4h/shift",
         ))
+    if r.night_hours:
+        rows.append(_row(
+            "Night Diff", r.night_hours, cfg.night_rate, r.night_pay(),
+            "23:00–07:00, any hours",
+        ))
     if r.ot_evening_pay():
         rows.append(_row(
             "OT Evening Diff", max(0.0, r.evening_hours - r.regular_hours),
